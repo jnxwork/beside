@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Stay Together</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -13,56 +13,200 @@
       align-items: center;
       justify-content: center;
       height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
       font-family: 'Courier New', monospace;
       color: #eee;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
     #game-container {
       position: relative;
-      border: 3px solid #16213e;
-      border-radius: 8px;
       overflow: hidden;
-      box-shadow: 0 0 30px rgba(0,0,0,0.5);
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
     }
-    canvas { display: block; }
+    canvas#game {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
 
-    /* Room label */
+    /* Room label — fades in then out */
     #room-label {
       position: absolute;
-      top: 8px;
+      top: 12px;
       left: 50%;
       transform: translateX(-50%);
-      padding: 4px 16px;
+      padding: 5px 20px;
       border-radius: 12px;
-      font-size: 13px;
+      font-size: 14px;
       font-weight: bold;
       pointer-events: none;
       z-index: 10;
+      opacity: 0;
+      transition: opacity 0.4s ease;
     }
+    #room-label.visible { opacity: 1; }
     #room-label.focus { background: rgba(15,52,96,0.85); color: #7ec8e3; }
     #room-label.rest  { background: rgba(83,52,131,0.85); color: #e8b4f8; }
 
-    /* UI bar */
-    #ui-bar {
+    /* Info panel — top left, compact with hover expand */
+    #info-panel {
+      position: absolute;
+      top: 10px;
+      left: 10px;
       display: flex;
-      gap: 12px;
-      margin-top: 12px;
       align-items: center;
+      gap: 0;
+      padding: 4px 10px;
+      background: rgba(42,40,56,0.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      border-radius: 12px;
+      z-index: 12;
+      font-size: 12px;
+      cursor: default;
+      transition: background 0.3s ease;
     }
-    #ui-bar input, #ui-bar select {
+    #info-panel:hover { background: rgba(42,40,56,0.85); }
+    #online-total { color: #53d769; font-weight: bold; font-size: 14px; white-space: nowrap; }
+    #online-detail {
+      display: flex;
+      gap: 8px;
+      overflow: hidden;
+      max-width: 0;
+      opacity: 0;
+      transition: max-width 0.35s ease, opacity 0.25s ease, margin 0.35s ease;
+      white-space: nowrap;
+      margin-left: 0;
+    }
+    #info-panel:hover #online-detail {
+      max-width: 200px;
+      opacity: 1;
+      margin-left: 10px;
+    }
+    #online-focus { color: #7ec8e3; font-size: 13px; }
+    #online-lounge { color: #e8b4f8; font-size: 13px; }
+
+    /* Settings panel — top right, compact with hover expand */
+    #settings-panel {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      padding: 4px 10px;
+      background: rgba(42,40,56,0.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      border-radius: 12px;
+      z-index: 12;
+      cursor: default;
+      transition: background 0.3s ease;
+    }
+    #settings-panel:hover, #settings-panel:focus-within { background: rgba(42,40,56,0.85); }
+    #settings-icon { font-size: 14px; line-height: 1; }
+    #settings-detail {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      overflow: hidden;
+      max-width: 0;
+      opacity: 0;
+      transition: max-width 0.35s ease, opacity 0.25s ease, margin 0.35s ease;
+      white-space: nowrap;
+      margin-left: 0;
+    }
+    #settings-panel:hover #settings-detail,
+    #settings-panel:focus-within #settings-detail {
+      max-width: 400px;
+      opacity: 1;
+      margin-left: 8px;
+    }
+    #settings-detail #name-input {
       background: #16213e;
       color: #eee;
       border: 1px solid #0f3460;
-      padding: 6px 10px;
+      padding: 4px 8px;
       border-radius: 4px;
       font-family: inherit;
-      font-size: 14px;
+      font-size: 12px;
+      width: 90px;
+      -webkit-user-select: text;
+      user-select: text;
     }
-    #ui-bar input:focus, #ui-bar select:focus {
+    #settings-detail #name-input:focus {
       outline: none;
       border-color: #e94560;
     }
-    #online-count { color: #53d769; font-size: 14px; }
-    #hint { margin-top: 8px; font-size: 12px; color: #666; }
+
+    /* Action bar — bottom center floating pill */
+    #action-bar {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+      padding: 5px 14px;
+      align-items: center;
+      background: rgba(42,40,56,0.55);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      border-radius: 20px;
+      z-index: 12;
+      transition: background 0.3s ease;
+    }
+    #action-bar:hover, #action-bar:focus-within {
+      background: rgba(42,40,56,0.85);
+    }
+    #action-bar select {
+      background: #16213e;
+      color: #eee;
+      border: 1px solid #0f3460;
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 13px;
+    }
+    #action-bar select:focus {
+      outline: none;
+      border-color: #e94560;
+    }
+    #hint {
+      position: absolute;
+      bottom: 48px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 11px;
+      color: rgba(255,255,255,0.3);
+      z-index: 12;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    /* Joystick */
+    #joystick-zone {
+      display: none;
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      width: 130px;
+      height: 130px;
+      z-index: 15;
+      touch-action: none;
+    }
+    #joystick-zone canvas {
+      border: none;
+      border-radius: 50%;
+    }
 
     /* Chat panel */
     #chat-wrap {
@@ -172,16 +316,313 @@
       width: 60px;
       accent-color: #e94560;
     }
+    #lang-toggle {
+      background: #16213e;
+      color: #eee;
+      border: 1px solid #0f3460;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+      font-weight: bold;
+    }
+    #lang-toggle:hover { border-color: #e94560; }
+
+    /* Focus button */
+    #focus-btn {
+      background: #16213e;
+      color: #e94560;
+      border: 1px solid #e94560;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: bold;
+      transition: background 0.2s;
+    }
+    #focus-btn:hover { background: #1a2a4e; }
+    #focus-btn.active {
+      background: #e94560;
+      color: #fff;
+    }
+
+    /* Focus timer display in UI bar */
+    #focus-timer-display {
+      color: #f5a623;
+      font-size: 14px;
+      font-weight: bold;
+      display: none;
+      gap: 8px;
+      align-items: center;
+    }
+    #focus-task-label {
+      color: #eee;
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #focus-time-value {
+      color: #f5a623;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Focus popup overlay */
+    #focus-popup {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+    }
+    .focus-popup-inner {
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 12px;
+      padding: 20px;
+      width: 280px;
+      text-align: center;
+    }
+    .focus-popup-title {
+      font-size: 14px;
+      font-weight: bold;
+      margin-bottom: 12px;
+      color: #eee;
+    }
+    .focus-category-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .focus-cat-btn {
+      background: #0f1b38;
+      color: #eee;
+      border: 2px solid #0f3460;
+      padding: 10px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      transition: border-color 0.2s;
+    }
+    .focus-cat-btn:hover { border-color: #e94560; }
+    .focus-cat-btn.selected {
+      border-color: #e94560;
+      background: #1a2a4e;
+    }
+    #focus-task-input {
+      width: 100%;
+      background: #0f1b38;
+      color: #eee;
+      border: 1px solid #0f3460;
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 13px;
+      margin-bottom: 12px;
+      box-sizing: border-box;
+    }
+    #focus-task-input:focus { outline: none; border-color: #e94560; }
+    .focus-popup-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+    .focus-popup-actions button {
+      padding: 8px 20px;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    #focus-confirm { background: #e94560; color: #fff; }
+    #focus-confirm:hover { background: #d03050; }
+    #focus-cancel { background: #0f3460; color: #eee; }
+    #focus-cancel:hover { background: #1a4a80; }
+
+    /* Focus portal confirm */
+    #focus-portal-confirm {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+    }
+
+    /* Welcome popup */
+    #welcome-popup {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 35;
+    }
+    #welcome-popup.hidden { display: none; }
+    .welcome-inner {
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 16px;
+      padding: 28px 24px;
+      width: 260px;
+      text-align: center;
+    }
+    .welcome-greeting {
+      font-size: 22px;
+      margin-bottom: 4px;
+    }
+    .welcome-title {
+      font-size: 14px;
+      color: #ccc;
+      margin-bottom: 16px;
+    }
+    #welcome-name {
+      width: 100%;
+      background: #0f1b38;
+      color: #eee;
+      border: 1px solid #0f3460;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 14px;
+      text-align: center;
+      box-sizing: border-box;
+      margin-bottom: 14px;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+    #welcome-name:focus { outline: none; border-color: #e94560; }
+    #welcome-name::placeholder { color: #555; }
+    .welcome-hint {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 14px;
+    }
+    #welcome-enter {
+      background: #e94560;
+      color: #fff;
+      border: none;
+      padding: 10px 28px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: bold;
+      transition: background 0.2s;
+    }
+    #welcome-enter:hover { background: #d03050; }
+
+    /* Auto-walk hint */
+    #autowalk-hint {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(22,33,62,0.9);
+      color: #f5a623;
+      padding: 8px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: bold;
+      z-index: 25;
+      pointer-events: none;
+      display: none;
+    }
+
+    /* Mobile portrait layout */
+    @media (max-width: 600px) {
+      #hint { display: none; }
+
+      #action-bar select, #action-bar button {
+        font-size: 13px;
+        padding: 6px 12px;
+        min-height: 44px;
+      }
+
+      /* Smooth repositioning on room switch */
+      #joystick-zone, #action-bar {
+        transition: bottom 0.3s ease;
+      }
+
+      /* Focus Zone defaults (no chat) */
+      #action-bar { bottom: 10px; }
+      #joystick-zone { bottom: 70px; }
+
+      /* Lounge: chat bottom drawer with margin */
+      #chat-wrap.visible {
+        flex-direction: column-reverse;
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+      }
+      #chat-wrap.visible #chat-panel {
+        width: 100%;
+        height: 140px;
+        border-radius: 8px 8px 0 0;
+        border-bottom: none;
+      }
+      #chat-wrap.visible #chat-panel.collapsed {
+        height: 0;
+        border: none;
+      }
+      #chat-wrap.visible #chat-toggle {
+        width: 100%;
+        text-align: center;
+        border-radius: 0 0 8px 8px;
+        align-self: stretch;
+        min-height: 44px;
+        font-size: 14px;
+      }
+      /* Collapsed: toggle gets full radius */
+      #chat-wrap.visible:has(#chat-panel.collapsed) #chat-toggle {
+        border-radius: 8px;
+      }
+
+      /* Lounge expanded: push action bar & joystick above chat */
+      #chat-wrap.visible ~ #action-bar {
+        bottom: 205px;
+      }
+      #chat-wrap.visible ~ #joystick-zone {
+        bottom: 265px;
+      }
+
+      /* Lounge collapsed: 8px gap above the 44px toggle + 8px bottom */
+      #chat-wrap.visible:has(#chat-panel.collapsed) ~ #action-bar {
+        bottom: 68px;
+      }
+      #chat-wrap.visible:has(#chat-panel.collapsed) ~ #joystick-zone {
+        bottom: 130px;
+      }
+    }
   </style>
 </head>
 <body>
   <div id="game-container">
-    <canvas id="game" width="800" height="576"></canvas>
+    <canvas id="game"></canvas>
+    <div id="welcome-popup">
+      <div class="welcome-inner">
+        <div class="welcome-greeting">&#x1F44B;</div>
+        <div class="welcome-title">What would you like to be called?</div>
+        <input id="welcome-name" type="text" placeholder="Your name..." maxlength="12" />
+        <div class="welcome-hint">You can change it anytime in ⚙️</div>
+        <button id="welcome-enter">Enter</button>
+      </div>
+    </div>
     <div id="room-label" class="focus">Focus Zone</div>
     <div id="chat-wrap">
       <button id="chat-toggle">Hide</button>
       <div id="chat-panel">
-        <div id="chat-title">Rest Zone Chat</div>
+        <div id="chat-title">Lounge Chat</div>
         <div id="chat-messages"></div>
         <div id="chat-input-bar">
           <input id="chat-input" type="text" placeholder="Say something..." maxlength="200" />
@@ -189,23 +630,67 @@
         </div>
       </div>
     </div>
-  </div>
-  <div id="ui-bar">
-    <input id="name-input" type="text" placeholder="Your name..." maxlength="12" />
-    <select id="status-select">
-      <option value="studying">studying</option>
-      <option value="working">working</option>
-      <option value="reading">reading</option>
-      <option value="resting">resting</option>
-      <option value="coding">coding</option>
-    </select>
-    <span id="online-count">Online: 1</span>
-    <div id="music-control">
-      <button id="music-toggle">Sound: OFF</button>
-      <input id="volume-slider" type="range" min="0" max="100" value="30" />
+    <div id="focus-popup">
+      <div class="focus-popup-inner">
+        <div class="focus-popup-title">What are you focusing on?</div>
+        <div class="focus-category-grid">
+          <button class="focus-cat-btn selected" data-category="studying">📖 Study</button>
+          <button class="focus-cat-btn" data-category="working">💼 Work</button>
+          <button class="focus-cat-btn" data-category="creating">📝 Create</button>
+          <button class="focus-cat-btn" data-category="reading">📚 Read</button>
+        </div>
+        <input id="focus-task-input" type="text" placeholder="Task name (optional)..." maxlength="50" />
+        <div class="focus-popup-actions">
+          <button id="focus-confirm">Start</button>
+          <button id="focus-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div id="focus-portal-confirm" style="display:none;">
+      <div class="focus-popup-inner">
+        <div class="focus-popup-title">End focus and go to Lounge?</div>
+        <div class="focus-popup-actions">
+          <button id="focus-portal-yes">Yes, take a break</button>
+          <button id="focus-portal-no">Keep focusing</button>
+        </div>
+      </div>
+    </div>
+    <div id="autowalk-hint">Going to rest...</div>
+    <div id="joystick-zone"><canvas id="joystick-canvas" width="130" height="130"></canvas></div>
+    <div id="hint"></div>
+    <div id="info-panel">
+      <span id="online-total">🟢 1</span>
+      <span id="online-detail">
+        <span id="online-focus">📖 0</span>
+        <span id="online-lounge">☕ 0</span>
+      </span>
+    </div>
+    <div id="settings-panel">
+      <span id="settings-icon">⚙️</span>
+      <span id="settings-detail">
+        <input id="name-input" type="text" placeholder="Your name..." maxlength="12" />
+        <div id="music-control">
+          <button id="music-toggle">Sound: OFF</button>
+          <input id="volume-slider" type="range" min="0" max="100" value="30" />
+        </div>
+        <button id="lang-toggle">EN</button>
+      </span>
+    </div>
+    <div id="action-bar">
+      <select id="status-select">
+        <option value="studying">studying</option>
+        <option value="working">working</option>
+        <option value="reading">reading</option>
+        <option value="resting">resting</option>
+        <option value="coding">coding</option>
+      </select>
+      <button id="focus-btn">Start Focus</button>
+      <span id="focus-timer-display">
+        <span id="focus-task-label"></span>
+        <span id="focus-time-value">00:00</span>
+      </span>
     </div>
   </div>
-  <div id="hint">Arrow keys / WASD to move | Walk to the portal to switch rooms</div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/js/game.js"></script>
