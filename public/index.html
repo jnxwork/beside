@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Stay Together</title>
+  <link rel="stylesheet" crossorigin="anonymous" href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -15,7 +16,8 @@
       height: 100vh;
       height: 100dvh;
       overflow: hidden;
-      font-family: 'Courier New', monospace;
+      font-family: 'MiSans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: bold;
       color: #eee;
       -webkit-touch-callout: none;
       -webkit-user-select: none;
@@ -43,9 +45,9 @@
       top: 12px;
       left: 50%;
       transform: translateX(-50%);
-      padding: 5px 20px;
+      padding: 4px 20px;
       border-radius: 12px;
-      font-size: 14px;
+      font-size: 16px;
       font-weight: bold;
       pointer-events: none;
       z-index: 10;
@@ -59,23 +61,23 @@
     /* Info panel — top left, compact with hover expand */
     #info-panel {
       position: absolute;
-      top: 10px;
-      left: 10px;
+      top: 8px;
+      left: 8px;
       display: flex;
       align-items: center;
       gap: 0;
-      padding: 4px 10px;
+      padding: 4px 8px;
       background: rgba(42,40,56,0.65);
       backdrop-filter: blur(4px);
       -webkit-backdrop-filter: blur(4px);
       border-radius: 12px;
       z-index: 12;
-      font-size: 12px;
+      font-size: 16px;
       cursor: default;
       transition: background 0.3s ease;
     }
     #info-panel:hover { background: rgba(42,40,56,0.85); }
-    #online-total { color: #53d769; font-weight: bold; font-size: 14px; white-space: nowrap; }
+    #online-total { color: #53d769; font-weight: bold; font-size: 16px; white-space: nowrap; }
     #online-detail {
       display: flex;
       gap: 8px;
@@ -87,22 +89,24 @@
       margin-left: 0;
     }
     #info-panel:hover #online-detail {
-      max-width: 200px;
+      max-width: 320px;
       opacity: 1;
-      margin-left: 10px;
+      margin-left: 8px;
     }
-    #online-focus { color: #7ec8e3; font-size: 13px; }
-    #online-lounge { color: #e8b4f8; font-size: 13px; }
+    #online-sep { color: rgba(255,255,255,0.3); font-size: 16px; }
+    #online-focus { color: #7ec8e3; font-size: 14px; }
+    #online-dot { color: rgba(255,255,255,0.3); font-size: 14px; }
+    #online-lounge { color: #e8b4f8; font-size: 14px; }
 
     /* Settings panel — top right, compact with hover expand */
     #settings-panel {
       position: absolute;
-      top: 10px;
-      right: 10px;
+      top: 8px;
+      right: 8px;
       display: flex;
       align-items: center;
       gap: 0;
-      padding: 4px 10px;
+      padding: 4px 8px;
       background: rgba(42,40,56,0.65);
       backdrop-filter: blur(4px);
       -webkit-backdrop-filter: blur(4px);
@@ -112,10 +116,10 @@
       transition: background 0.3s ease;
     }
     #settings-panel:hover, #settings-panel:focus-within { background: rgba(42,40,56,0.85); }
-    #settings-icon { font-size: 14px; line-height: 1; }
+    #settings-icon { font-size: 16px; line-height: 1; }
     #settings-detail {
       display: flex;
-      gap: 6px;
+      gap: 4px;
       align-items: center;
       overflow: hidden;
       max-width: 0;
@@ -137,25 +141,25 @@
       padding: 4px 8px;
       border-radius: 4px;
       font-family: inherit;
-      font-size: 12px;
+      font-size: 16px;
       width: 90px;
       -webkit-user-select: text;
       user-select: text;
     }
     #settings-detail #name-input:focus {
       outline: none;
-      border-color: #e94560;
+      border-color: #f5a623;
     }
 
     /* Action bar — bottom center floating pill */
     #action-bar {
       position: absolute;
-      bottom: 10px;
+      bottom: 8px;
       left: 50%;
       transform: translateX(-50%);
       display: flex;
       gap: 8px;
-      padding: 5px 14px;
+      padding: 4px 12px;
       align-items: center;
       background: rgba(42,40,56,0.55);
       backdrop-filter: blur(4px);
@@ -171,21 +175,21 @@
       background: #16213e;
       color: #eee;
       border: 1px solid #0f3460;
-      padding: 5px 8px;
+      padding: 4px 8px;
       border-radius: 4px;
       font-family: inherit;
-      font-size: 13px;
+      font-size: 16px;
     }
     #action-bar select:focus {
       outline: none;
-      border-color: #e94560;
+      border-color: #f5a623;
     }
     #hint {
       position: absolute;
-      bottom: 48px;
+      bottom: 44px;
       left: 50%;
       transform: translateX(-50%);
-      font-size: 11px;
+      font-size: 16px;
       color: rgba(255,255,255,0.3);
       z-index: 12;
       pointer-events: none;
@@ -196,10 +200,10 @@
     #joystick-zone {
       display: none;
       position: absolute;
-      right: 10px;
-      bottom: 10px;
-      width: 130px;
-      height: 130px;
+      right: 8px;
+      bottom: 8px;
+      width: 128px;
+      height: 128px;
       z-index: 15;
       touch-action: none;
     }
@@ -224,16 +228,16 @@
       color: #e8b4f8;
       border: 1px solid #0f3460;
       padding: 4px 12px;
-      border-radius: 6px 6px 0 0;
+      border-radius: 8px 8px 0 0;
       cursor: pointer;
-      font-size: 12px;
+      font-size: 16px;
       font-family: inherit;
       align-self: flex-start;
     }
     #chat-toggle:hover { background: rgba(107,68,160,0.9); }
     #chat-panel {
-      width: 240px;
-      height: 170px;
+      width: 300px;
+      height: 220px;
       display: flex;
       flex-direction: column;
       background: rgba(22,33,62,0.88);
@@ -250,7 +254,7 @@
     }
     #chat-title {
       padding: 8px 12px;
-      font-size: 12px;
+      font-size: 16px;
       font-weight: bold;
       color: #e8b4f8;
       border-bottom: 1px solid #0f3460;
@@ -259,17 +263,41 @@
       flex: 1;
       overflow-y: auto;
       padding: 8px;
-      font-size: 12px;
-      line-height: 1.5;
+      font-size: 14px;
+      line-height: 1.4;
     }
     #chat-messages::-webkit-scrollbar { width: 4px; }
-    #chat-messages::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
-    .chat-msg { margin-bottom: 6px; word-break: break-word; }
-    .chat-msg .chat-name { color: #f5a623; font-weight: bold; }
+    #chat-messages::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 4px; }
+    .chat-msg { margin-bottom: 4px; word-break: break-word; line-height: 1.4; }
+    .chat-msg .chat-time { color: #666; font-size: 14px; margin-right: 4px; }
+    .chat-msg .chat-name { font-weight: bold; font-size: 14px; }
+    .chat-msg .chat-name::after { content: ":"; color: #666; }
     .chat-msg .chat-text { color: #ddd; }
+    .chat-msg.chat-system {
+      color: #777;
+      font-size: 14px;
+      font-style: italic;
+      text-align: center;
+      margin: 4px 0;
+    }
+    .chat-badge {
+      display: inline-block;
+      background: #f5a623;
+      color: #fff;
+      font-size: 16px;
+      font-weight: bold;
+      min-width: 20px;
+      height: 20px;
+      line-height: 20px;
+      text-align: center;
+      border-radius: 10px;
+      margin-left: 4px;
+      padding: 0 4px;
+      font-style: normal;
+    }
     #chat-input-bar {
       display: flex;
-      padding: 6px;
+      padding: 4px;
       gap: 4px;
       border-top: 1px solid #0f3460;
     }
@@ -278,20 +306,20 @@
       background: #0f1b38;
       color: #eee;
       border: 1px solid #0f3460;
-      padding: 5px 8px;
+      padding: 4px 8px;
       border-radius: 4px;
       font-family: inherit;
-      font-size: 12px;
+      font-size: 16px;
     }
-    #chat-input:focus { outline: none; border-color: #e94560; }
+    #chat-input:focus { outline: none; border-color: #f5a623; }
     #chat-send {
       background: #533483;
       color: #fff;
       border: none;
-      padding: 5px 10px;
+      padding: 4px 8px;
       border-radius: 4px;
       cursor: pointer;
-      font-size: 12px;
+      font-size: 16px;
     }
     #chat-send:hover { background: #6b44a0; }
 
@@ -299,59 +327,59 @@
     #music-control {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
     }
     #music-toggle {
       background: #16213e;
       color: #eee;
       border: 1px solid #0f3460;
-      padding: 4px 10px;
+      padding: 4px 8px;
       border-radius: 4px;
       cursor: pointer;
-      font-size: 13px;
+      font-size: 16px;
       font-family: inherit;
     }
-    #music-toggle:hover { border-color: #e94560; }
+    #music-toggle:hover { border-color: #f5a623; }
     #volume-slider {
       width: 60px;
-      accent-color: #e94560;
+      accent-color: #f5a623;
     }
     #lang-toggle {
       background: #16213e;
       color: #eee;
       border: 1px solid #0f3460;
-      padding: 4px 10px;
+      padding: 4px 8px;
       border-radius: 4px;
       cursor: pointer;
-      font-size: 12px;
+      font-size: 16px;
       font-family: inherit;
       font-weight: bold;
     }
-    #lang-toggle:hover { border-color: #e94560; }
+    #lang-toggle:hover { border-color: #f5a623; }
 
     /* Focus button */
     #focus-btn {
       background: #16213e;
-      color: #e94560;
-      border: 1px solid #e94560;
-      padding: 6px 14px;
+      color: #f5a623;
+      border: 1px solid #f5a623;
+      padding: 4px 12px;
       border-radius: 4px;
       cursor: pointer;
       font-family: inherit;
-      font-size: 14px;
+      font-size: 16px;
       font-weight: bold;
       transition: background 0.2s;
     }
     #focus-btn:hover { background: #1a2a4e; }
     #focus-btn.active {
-      background: #e94560;
+      background: #f5a623;
       color: #fff;
     }
 
     /* Focus timer display in UI bar */
     #focus-timer-display {
       color: #f5a623;
-      font-size: 14px;
+      font-size: 16px;
       font-weight: bold;
       display: none;
       gap: 8px;
@@ -388,7 +416,7 @@
       text-align: center;
     }
     .focus-popup-title {
-      font-size: 14px;
+      font-size: 16px;
       font-weight: bold;
       margin-bottom: 12px;
       color: #eee;
@@ -403,16 +431,16 @@
       background: #0f1b38;
       color: #eee;
       border: 2px solid #0f3460;
-      padding: 10px 8px;
+      padding: 8px 8px;
       border-radius: 8px;
       cursor: pointer;
       font-family: inherit;
-      font-size: 13px;
+      font-size: 16px;
       transition: border-color 0.2s;
     }
-    .focus-cat-btn:hover { border-color: #e94560; }
+    .focus-cat-btn:hover { border-color: #f5a623; }
     .focus-cat-btn.selected {
-      border-color: #e94560;
+      border-color: #f5a623;
       background: #1a2a4e;
     }
     #focus-task-input {
@@ -420,14 +448,14 @@
       background: #0f1b38;
       color: #eee;
       border: 1px solid #0f3460;
-      padding: 8px 10px;
+      padding: 8px 8px;
       border-radius: 4px;
       font-family: inherit;
-      font-size: 13px;
+      font-size: 16px;
       margin-bottom: 12px;
       box-sizing: border-box;
     }
-    #focus-task-input:focus { outline: none; border-color: #e94560; }
+    #focus-task-input:focus { outline: none; border-color: #f5a623; }
     .focus-popup-actions {
       display: flex;
       gap: 8px;
@@ -439,10 +467,10 @@
       border: none;
       cursor: pointer;
       font-family: inherit;
-      font-size: 13px;
+      font-size: 16px;
       font-weight: bold;
     }
-    #focus-confirm { background: #e94560; color: #fff; }
+    #focus-confirm { background: #f5a623; color: #fff; }
     #focus-confirm:hover { background: #d03050; }
     #focus-cancel { background: #0f3460; color: #eee; }
     #focus-cancel:hover { background: #1a4a80; }
@@ -456,6 +484,303 @@
       align-items: center;
       justify-content: center;
       z-index: 30;
+    }
+
+    /* History button */
+    #history-btn {
+      background: #16213e;
+      color: #f5a623;
+      border: 1px solid #0f3460;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      font-family: inherit;
+      transition: background 0.2s;
+    }
+    #history-btn:hover { background: #1a2a4e; }
+
+    /* History popup */
+    #history-popup {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+    }
+    .history-popup-inner {
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 12px;
+      padding: 20px;
+      width: 320px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .history-popup-title {
+      font-size: 16px;
+      font-weight: bold;
+      margin-bottom: 12px;
+      color: #eee;
+      text-align: center;
+    }
+    .history-today-summary {
+      background: #0f1b38;
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .history-today-label {
+      color: #999;
+      font-size: 16px;
+    }
+    .history-today-time {
+      color: #f5a623;
+      font-size: 32px;
+      font-weight: bold;
+      flex: 1;
+    }
+    .history-today-sessions {
+      color: #999;
+      font-size: 16px;
+    }
+    .history-section-label {
+      color: #888;
+      font-size: 16px;
+      font-weight: bold;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      letter-spacing: 0.5px;
+    }
+    .history-chart {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      height: 80px;
+      margin-bottom: 12px;
+      padding: 0 4px;
+    }
+    .history-bar-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100%;
+      justify-content: flex-end;
+    }
+    .history-bar {
+      width: 100%;
+      border-radius: 4px 4px 0 0;
+      min-height: 2px;
+      background: #f5a623;
+      transition: height 0.3s ease;
+    }
+    .history-bar.today {
+      background: #f5a623;
+    }
+    .history-bar-label {
+      color: #666;
+      font-size: 16px;
+      margin-top: 4px;
+    }
+    .history-bar-value {
+      color: #999;
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    .history-list {
+      max-height: 160px;
+      overflow-y: auto;
+      margin-bottom: 12px;
+    }
+    .history-list::-webkit-scrollbar { width: 4px; }
+    .history-list::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 4px; }
+    .history-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 4px;
+      border-bottom: 1px solid rgba(15,52,96,0.5);
+      font-size: 16px;
+    }
+    .history-row:last-child { border-bottom: none; }
+    .history-row-icon { font-size: 16px; flex-shrink: 0; }
+    .history-row-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .history-row-task {
+      color: #eee;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .history-row-date {
+      color: #666;
+      font-size: 16px;
+    }
+    .history-row-duration {
+      color: #f5a623;
+      font-weight: bold;
+      flex-shrink: 0;
+    }
+    .history-row-delete {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: #555;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px 4px;
+      border-radius: 4px;
+      line-height: 1;
+      transition: color 0.2s, background 0.2s;
+    }
+    .history-row-delete:hover {
+      color: #f5a623;
+      background: rgba(233,69,96,0.15);
+    }
+    .history-no-data {
+      color: #666;
+      font-size: 16px;
+      text-align: center;
+      padding: 20px 0;
+    }
+    #history-close {
+      background: #0f3460;
+      color: #eee;
+      padding: 8px 20px;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    #history-close:hover { background: #1a4a80; }
+
+    @media (max-width: 600px) {
+      .history-popup-inner { width: 90vw; }
+      .history-chart { height: 60px; }
+      .history-list { max-height: 120px; }
+    }
+
+    /* Emoji Picker */
+    #emoji-picker {
+      position: absolute;
+      z-index: 40;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 8px 8px;
+      background: rgba(22,33,62,0.92);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border: 1px solid rgba(245,166,35,0.3);
+      border-radius: 12px;
+    }
+    #emoji-picker-name {
+      color: #4DA6FF;
+      font-size: 12px;
+      font-weight: bold;
+      white-space: nowrap;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #emoji-picker-buttons {
+      display: flex;
+      gap: 4px;
+    }
+    .emoji-btn {
+      width: 44px;
+      height: 44px;
+      font-size: 22px;
+      background: rgba(255,255,255,0.06);
+      border: 2px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .emoji-btn:hover {
+      border-color: #f5a623;
+      background: rgba(245,166,35,0.12);
+    }
+
+    /* Reaction notifications */
+    #reaction-notifications {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      z-index: 18;
+      max-height: 180px;
+      overflow-y: auto;
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      pointer-events: auto;
+    }
+    #reaction-notifications::-webkit-scrollbar { width: 4px; }
+    #reaction-notifications::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 4px; }
+    .reaction-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      margin-bottom: 4px;
+      background: rgba(22,33,62,0.85);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .reaction-time {
+      color: #666;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .reaction-content {
+      color: #ddd;
+      font-size: 14px;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .reaction-content .reaction-name {
+      color: #4DA6FF;
+      font-weight: bold;
+    }
+    .reaction-close {
+      background: none;
+      border: none;
+      color: #666;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 0 4px;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+    .reaction-close:hover {
+      color: #f5a623;
+    }
+    /* Lounge chat visible: push notifications above chat */
+    #chat-wrap.visible ~ #reaction-notifications {
+      bottom: 248px;
+    }
+    #chat-wrap.visible:has(#chat-panel.collapsed) ~ #reaction-notifications {
+      bottom: 60px;
     }
 
     /* Welcome popup */
@@ -473,16 +798,16 @@
       background: #16213e;
       border: 1px solid #0f3460;
       border-radius: 16px;
-      padding: 28px 24px;
+      padding: 24px 24px;
       width: 260px;
       text-align: center;
     }
     .welcome-greeting {
-      font-size: 22px;
+      font-size: 32px;
       margin-bottom: 4px;
     }
     .welcome-title {
-      font-size: 14px;
+      font-size: 16px;
       color: #ccc;
       margin-bottom: 16px;
     }
@@ -491,32 +816,32 @@
       background: #0f1b38;
       color: #eee;
       border: 1px solid #0f3460;
-      padding: 10px 12px;
+      padding: 8px 12px;
       border-radius: 8px;
       font-family: inherit;
-      font-size: 14px;
+      font-size: 16px;
       text-align: center;
       box-sizing: border-box;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
       -webkit-user-select: text;
       user-select: text;
     }
-    #welcome-name:focus { outline: none; border-color: #e94560; }
+    #welcome-name:focus { outline: none; border-color: #f5a623; }
     #welcome-name::placeholder { color: #555; }
     .welcome-hint {
-      font-size: 11px;
+      font-size: 16px;
       color: #666;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
     }
     #welcome-enter {
-      background: #e94560;
+      background: #f5a623;
       color: #fff;
       border: none;
-      padding: 10px 28px;
+      padding: 8px 24px;
       border-radius: 8px;
       cursor: pointer;
       font-family: inherit;
-      font-size: 14px;
+      font-size: 16px;
       font-weight: bold;
       transition: background 0.2s;
     }
@@ -532,7 +857,7 @@
       color: #f5a623;
       padding: 8px 20px;
       border-radius: 8px;
-      font-size: 14px;
+      font-size: 16px;
       font-weight: bold;
       z-index: 25;
       pointer-events: none;
@@ -544,8 +869,8 @@
       #hint { display: none; }
 
       #action-bar select, #action-bar button {
-        font-size: 13px;
-        padding: 6px 12px;
+        font-size: 16px;
+        padding: 4px 12px;
         min-height: 44px;
       }
 
@@ -555,8 +880,8 @@
       }
 
       /* Focus Zone defaults (no chat) */
-      #action-bar { bottom: 10px; }
-      #joystick-zone { bottom: 70px; }
+      #action-bar { bottom: 8px; }
+      #joystick-zone { bottom: 68px; }
 
       /* Lounge: chat bottom drawer with margin */
       #chat-wrap.visible {
@@ -567,7 +892,7 @@
       }
       #chat-wrap.visible #chat-panel {
         width: 100%;
-        height: 140px;
+        height: 180px;
         border-radius: 8px 8px 0 0;
         border-bottom: none;
       }
@@ -581,7 +906,7 @@
         border-radius: 0 0 8px 8px;
         align-self: stretch;
         min-height: 44px;
-        font-size: 14px;
+        font-size: 16px;
       }
       /* Collapsed: toggle gets full radius */
       #chat-wrap.visible:has(#chat-panel.collapsed) #chat-toggle {
@@ -590,10 +915,10 @@
 
       /* Lounge expanded: push action bar & joystick above chat */
       #chat-wrap.visible ~ #action-bar {
-        bottom: 205px;
+        bottom: 244px;
       }
       #chat-wrap.visible ~ #joystick-zone {
-        bottom: 265px;
+        bottom: 304px;
       }
 
       /* Lounge collapsed: 8px gap above the 44px toggle + 8px bottom */
@@ -601,7 +926,18 @@
         bottom: 68px;
       }
       #chat-wrap.visible:has(#chat-panel.collapsed) ~ #joystick-zone {
-        bottom: 130px;
+        bottom: 128px;
+      }
+
+      /* Mobile: notification panel full width */
+      #reaction-notifications {
+        width: calc(100vw - 16px);
+      }
+      #chat-wrap.visible ~ #reaction-notifications {
+        bottom: 244px;
+      }
+      #chat-wrap.visible:has(#chat-panel.collapsed) ~ #reaction-notifications {
+        bottom: 60px;
       }
     }
   </style>
@@ -655,14 +991,45 @@
         </div>
       </div>
     </div>
+    <div id="history-popup">
+      <div class="history-popup-inner">
+        <div class="history-popup-title">Focus History</div>
+        <div class="history-today-summary">
+          <span class="history-today-label">Today</span>
+          <span id="history-today-time" class="history-today-time">0 min</span>
+          <span class="history-today-sessions"><span id="history-today-count">0</span> sessions</span>
+        </div>
+        <div class="history-section-label">Last 7 Days</div>
+        <div id="history-chart" class="history-chart"></div>
+        <div class="history-section-label">Recent Sessions</div>
+        <div id="history-list" class="history-list"></div>
+        <div class="focus-popup-actions">
+          <button id="history-close">Close</button>
+        </div>
+      </div>
+    </div>
+    <div id="emoji-picker" style="display:none;">
+      <div id="emoji-picker-name"></div>
+      <div id="emoji-picker-buttons">
+        <button class="emoji-btn" data-emoji="👋">👋</button>
+        <button class="emoji-btn" data-emoji="💪">💪</button>
+        <button class="emoji-btn" data-emoji="❤️">❤️</button>
+        <button class="emoji-btn" data-emoji="⭐">⭐</button>
+      </div>
+    </div>
+    <div id="reaction-notifications">
+      <div id="reaction-list"></div>
+    </div>
     <div id="autowalk-hint">Going to rest...</div>
     <div id="joystick-zone"><canvas id="joystick-canvas" width="130" height="130"></canvas></div>
     <div id="hint"></div>
     <div id="info-panel">
       <span id="online-total">🟢 1</span>
       <span id="online-detail">
-        <span id="online-focus">📖 0</span>
-        <span id="online-lounge">☕ 0</span>
+        <span id="online-sep">┊</span>
+        <span id="online-focus">📖 Focus 0</span>
+        <span id="online-dot">·</span>
+        <span id="online-lounge">☕ Lounge 0</span>
       </span>
     </div>
     <div id="settings-panel">
@@ -689,6 +1056,7 @@
         <span id="focus-task-label"></span>
         <span id="focus-time-value">00:00</span>
       </span>
+      <button id="history-btn" title="Focus History">&#x1f4ca;</button>
     </div>
   </div>
 

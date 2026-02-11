@@ -17,22 +17,26 @@ const GAME_H = 576;
 
 // Camera state
 let gameScale = 1;
+let dpr = window.devicePixelRatio || 1;
 let cameraX = 0;
 let cameraY = 0;
 
 function resizeCanvas() {
+  dpr = window.devicePixelRatio || 1;
   const w = window.innerWidth;
   const h = window.innerHeight;
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
   // Scale so the game world always covers the viewport (fill, not fit)
   gameScale = Math.max(w / GAME_W, h / GAME_H);
 }
 
 function updateCamera() {
   if (!localPlayer) return;
-  const viewW = canvas.width / gameScale;
-  const viewH = canvas.height / gameScale;
+  const viewW = (canvas.width / dpr) / gameScale;
+  const viewH = (canvas.height / dpr) / gameScale;
   if (viewW >= GAME_W) {
     cameraX = (GAME_W - viewW) / 2; // center
   } else {
@@ -57,8 +61,8 @@ function screenToGame(clientX, clientY) {
   const sx = (clientX - rect.left) * (canvas.width / rect.width);
   const sy = (clientY - rect.top) * (canvas.height / rect.height);
   return {
-    x: sx / gameScale + cameraX,
-    y: sy / gameScale + cameraY,
+    x: sx / (gameScale * dpr) + cameraX,
+    y: sy / (gameScale * dpr) + cameraY,
   };
 }
 
@@ -112,10 +116,24 @@ const TRANSLATIONS = {
     wandering: "Wandering",
     daydreaming: "Daydreaming",
     grabCoffee: "Going to grab some coffee...",
+    joinedLounge: "joined the Lounge",
+    leftLounge: "left",
     welcomeTitle: "What would you like to be called?",
     welcomeHint: "You can change it anytime in \u2699\uFE0F",
     welcomeEnter: "Enter",
     lang: "\u{4E2D}\u6587",
+    historyTitle: "Focus History",
+    historyToday: "Today",
+    historySessions: "sessions",
+    historyLast7Days: "Last 7 Days",
+    historyRecentSessions: "Recent Sessions",
+    historyNoData: "No focus sessions yet",
+    historyClose: "Close",
+    historyMin: "min",
+    historyH: "h",
+    reacted: "sent you",
+    reactedTo: "You sent",
+    reactedToSuffix: "",
   },
   zh: {
     focusZone: "\u4E13\u6CE8\u533A",
@@ -162,10 +180,24 @@ const TRANSLATIONS = {
     wandering: "\u95F2\u901B\u4E2D",
     daydreaming: "\u53D1\u5446\u4E2D",
     grabCoffee: "\u53BB\u559D\u676F\u5496\u5561...",
+    joinedLounge: "\u52A0\u5165\u4E86\u4F11\u95F2\u533A",
+    leftLounge: "\u79BB\u5F00\u4E86",
     welcomeTitle: "\u4F60\u60F3\u88AB\u600E\u4E48\u79F0\u547C\uFF1F",
     welcomeHint: "\u53EF\u4EE5\u968F\u65F6\u5728\u53F3\u4E0A\u89D2 \u2699\uFE0F \u4E2D\u4FEE\u6539",
     welcomeEnter: "\u8FDB\u5165",
     lang: "EN",
+    historyTitle: "\u4E13\u6CE8\u8BB0\u5F55",
+    historyToday: "\u4ECA\u5929",
+    historySessions: "\u6B21",
+    historyLast7Days: "\u8FD1 7 \u5929",
+    historyRecentSessions: "\u6700\u8FD1\u8BB0\u5F55",
+    historyNoData: "\u8FD8\u6CA1\u6709\u4E13\u6CE8\u8BB0\u5F55",
+    historyClose: "\u5173\u95ED",
+    historyMin: "\u5206\u949F",
+    historyH: "\u5C0F\u65F6",
+    reacted: "\u5BF9\u4F60\u53D1\u9001\u4E86",
+    reactedTo: "\u4F60\u5BF9",
+    reactedToSuffix: "\u53D1\u9001\u4E86",
   },
 };
 
@@ -231,6 +263,17 @@ function applyLanguage() {
     chatToggle.textContent = chatPanel.classList.contains("collapsed") ? t("chat") : t("hide");
   }
 
+  // History popup
+  const hpt = document.querySelector(".history-popup-title");
+  if (hpt) hpt.textContent = t("historyTitle");
+  const htl = document.querySelector(".history-today-label");
+  if (htl) htl.textContent = t("historyToday");
+  const hsl = document.querySelectorAll(".history-section-label");
+  if (hsl[0]) hsl[0].textContent = t("historyLast7Days");
+  if (hsl[1]) hsl[1].textContent = t("historyRecentSessions");
+  const hc = document.getElementById("history-close");
+  if (hc) hc.textContent = t("historyClose");
+
   // Re-apply dynamic UI
   if (typeof updateRoomUI === "function") updateRoomUI();
 }
@@ -254,28 +297,28 @@ let currentRoom = "focus";
 
 // --- Focus Room Colors ---
 const FOCUS_COLORS = {
-  floor: "#e8d8b8",
-  floorDark: "#ddd0aa",
-  wall: "#c8b898",
-  wallTop: "#d4c8a8",
-  wallDark: "#b8a888",
-  desk: "#a07848",
-  deskTop: "#b88858",
-  chair: "#6b9e6b",
-  bookshelf: "#8a6838",
-  bookColors: ["#e06050", "#4a8ac0", "#50a060", "#e0a030", "#8060b0"],
+  floor: "#b8c4d0",
+  floorDark: "#a8b6c4",
+  wall: "#8a96a6",
+  wallTop: "#98a4b4",
+  wallDark: "#7a8898",
+  desk: "#6a7a8a",
+  deskTop: "#7a8a9a",
+  chair: "#5a7a8a",
+  bookshelf: "#5c6a78",
+  bookColors: ["#c07060", "#4a8ab8", "#5a9a6a", "#d4a040", "#8a70a8"],
   plant: "#5a9a68",
-  plantPot: "#c09060",
-  rug: "#a8c0d8",
-  rugAlt: "#98b4cc",
+  plantPot: "#8a9aa8",
+  rug: "#8a9cb0",
+  rugAlt: "#7e90a4",
   portal: "#e07080",
   portalGlow: "#f0909a",
 };
 
 // --- Rest Room Colors ---
 const REST_COLORS = {
-  floor: "#e8d0b0",
-  floorDark: "#dcc4a4",
+  floor: "#8b6f55",
+  floorDark: "#7d6349",
   wall: "#c0a0b8",
   wallTop: "#d0b0c8",
   wallDark: "#b090a8",
@@ -287,8 +330,8 @@ const REST_COLORS = {
   bookColors: ["#e07060", "#e0a040", "#60b070", "#e08040", "#d06090"],
   plant: "#5a9a68",
   plantPot: "#c09060",
-  rug: "#e0c0b8",
-  rugAlt: "#d4b4ac",
+  rug: "#a08070",
+  rugAlt: "#947464",
   coffeeMachine: "#787878",
   coffeeTop: "#909090",
   portal: "#60a0d0",
@@ -303,29 +346,49 @@ function buildFocusMap() {
       if (r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1) {
         row.push(1);
       }
-      // Bookshelves along top wall (3 groups, spread across 32 cols)
-      else if (r === 1 && c >= 2 && c <= 7) row.push(3);
-      else if (r === 1 && c >= 13 && c <= 18) row.push(3);
-      else if (r === 1 && c >= 24 && c <= 29) row.push(3);
-      // Desk clusters (top row) — 3 groups evenly spaced
-      else if (r >= 4 && r <= 5 && c >= 4 && c <= 6) row.push(2);
-      else if (r >= 4 && r <= 5 && c === 7) row.push(7);
-      else if (r >= 4 && r <= 5 && c >= 14 && c <= 16) row.push(2);
-      else if (r >= 4 && r <= 5 && c === 17) row.push(7);
-      else if (r >= 4 && r <= 5 && c >= 24 && c <= 26) row.push(2);
-      else if (r >= 4 && r <= 5 && c === 27) row.push(7);
-      // Desk clusters (bottom row)
-      else if (r >= 10 && r <= 11 && c >= 4 && c <= 6) row.push(2);
-      else if (r >= 10 && r <= 11 && c === 7) row.push(7);
-      else if (r >= 10 && r <= 11 && c >= 14 && c <= 16) row.push(2);
-      else if (r >= 10 && r <= 11 && c === 17) row.push(7);
-      else if (r >= 10 && r <= 11 && c >= 24 && c <= 26) row.push(2);
-      else if (r >= 10 && r <= 11 && c === 27) row.push(7);
-      // Plants in corners
-      else if ((r === 1 && c === 1) || (r === 1 && c === COLS - 2)) row.push(4);
-      else if ((r === ROWS - 2 && c === 1) || (r === ROWS - 2 && c === COLS - 2)) row.push(4);
-      // Center quiet zone rug
-      else if (r >= 7 && r <= 8 && c >= 12 && c <= 19) row.push(5);
+      // Bookshelves along top wall (4 groups)
+      else if (r === 1 && c >= 2 && c <= 5) row.push(3);
+      else if (r === 1 && c >= 10 && c <= 13) row.push(3);
+      else if (r === 1 && c >= 18 && c <= 21) row.push(3);
+      else if (r === 1 && c >= 26 && c <= 29) row.push(3);
+      // Plants in corners and bottom
+      else if (r === 1 && (c === 1 || c === 30)) row.push(4);
+      else if (r === 14 && (c === 1 || c === 30)) row.push(4);
+      else if (r === 16 && (c === 1 || c === 30)) row.push(4);
+      // --- Top desk row (r=3,4) ---
+      // 1-person desk (left): desk at c=3, chair at c=4
+      else if ((r === 3 || r === 4) && c === 3) row.push(2);
+      else if ((r === 3 || r === 4) && c === 4) row.push(7);
+      // 2-person desk (mid-left): desk at c=8-9, chair at c=10
+      else if ((r === 3 || r === 4) && (c === 8 || c === 9)) row.push(2);
+      else if ((r === 3 || r === 4) && c === 10) row.push(7);
+      // 4-person desk (center): desk at c=14-17 (r=3), chair at c=14-17 (r=4)
+      else if (r === 3 && c >= 14 && c <= 17) row.push(2);
+      else if (r === 4 && c >= 14 && c <= 17) row.push(7);
+      // 2-person desk (mid-right): desk at c=21-22, chair at c=23
+      else if ((r === 3 || r === 4) && (c === 21 || c === 22)) row.push(2);
+      else if ((r === 3 || r === 4) && c === 23) row.push(7);
+      // 1-person desk (right): desk at c=27, chair at c=28
+      else if ((r === 3 || r === 4) && c === 27) row.push(2);
+      else if ((r === 3 || r === 4) && c === 28) row.push(7);
+      // --- Bottom desk row (r=11,12) ---
+      // 1-person desk (left): desk at c=3, chair at c=4
+      else if ((r === 11 || r === 12) && c === 3) row.push(2);
+      else if ((r === 11 || r === 12) && c === 4) row.push(7);
+      // 2-person desk (mid-left): desk at c=8-9, chair at c=10
+      else if ((r === 11 || r === 12) && (c === 8 || c === 9)) row.push(2);
+      else if ((r === 11 || r === 12) && c === 10) row.push(7);
+      // 4-person desk (center): desk at c=14-17 (r=11), chair at c=14-17 (r=12)
+      else if (r === 11 && c >= 14 && c <= 17) row.push(2);
+      else if (r === 12 && c >= 14 && c <= 17) row.push(7);
+      // 2-person desk (mid-right): desk at c=21-22, chair at c=23
+      else if ((r === 11 || r === 12) && (c === 21 || c === 22)) row.push(2);
+      else if ((r === 11 || r === 12) && c === 23) row.push(7);
+      // 1-person desk (right): desk at c=27, chair at c=28
+      else if ((r === 11 || r === 12) && c === 27) row.push(2);
+      else if ((r === 11 || r === 12) && c === 28) row.push(7);
+      // Center rug
+      else if (r >= 7 && r <= 8 && c >= 11 && c <= 20) row.push(5);
       // Portal to rest zone (bottom center)
       else if (r === ROWS - 2 && c >= 14 && c <= 17) row.push(8);
       else row.push(0);
@@ -633,18 +696,22 @@ function drawPortal(x, y, colors) {
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  // Small static label
+  // Small static label (draw at native resolution)
   const label = currentRoom === "focus" ? t("portalToLounge") : t("portalToFocus");
-  ctx.font = "bold 10px 'Courier New'";
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const ps = gameToScreen(px + pw / 2, py - 10);
+  ctx.font = "bold 16px 'MiSans', sans-serif";
+  ctx.letterSpacing = "0.32px";
   ctx.textAlign = "center";
-  const labelY = py - 10;
+  ctx.textBaseline = "middle";
   const textWidth = ctx.measureText(label).width;
   ctx.fillStyle = "rgba(0,0,0,0.5)";
-  ctx.fillRect(px + pw / 2 - textWidth / 2 - 6, labelY - 9, textWidth + 12, 16);
+  ctx.fillRect(ps.x - textWidth / 2 - 6, ps.y - 8, textWidth + 12, 16);
   ctx.fillStyle = "#fff";
   ctx.globalAlpha = 0.8;
-  ctx.fillText(label, px + pw / 2, labelY + 3);
-  ctx.globalAlpha = 1;
+  ctx.fillText(label, ps.x, ps.y);
+  ctx.restore();
 }
 
 // ============================================================
@@ -681,76 +748,200 @@ function hashColor(id) {
   return BODY_COLORS[Math.abs(hash) % BODY_COLORS.length];
 }
 
+// Lighten a hex color for use on dark backgrounds
+function lightenColor(hex, amount) {
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  const lr = Math.min(255, r + (255 - r) * amount);
+  const lg = Math.min(255, g + (255 - g) * amount);
+  const lb = Math.min(255, b + (255 - b) * amount);
+  return `rgb(${Math.round(lr)},${Math.round(lg)},${Math.round(lb)})`;
+}
+
 function drawPlayerBody(player, isLocal) {
   const { x, y } = player;
   const color = hashColor(player.id);
 
   // Shadow
-  ctx.fillStyle = "rgba(0,0,0,0.15)";
+  ctx.fillStyle = "rgba(0,0,0,0.18)";
   ctx.beginPath();
-  ctx.ellipse(x, y + 12, 10, 4, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, y + 12, 9, 3, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Body
+  // Body (rounded capsule / pill shape)
   ctx.fillStyle = color;
-  ctx.fillRect(x - 8, y - 6, 16, 18);
-
-  // Head
-  ctx.fillStyle = "#ffd5a0";
   ctx.beginPath();
-  ctx.arc(x, y - 10, 8, 0, Math.PI * 2);
+  ctx.moveTo(x - 8, y - 2);
+  ctx.lineTo(x - 8, y + 6);
+  ctx.arc(x, y + 6, 8, Math.PI, 0, true);   // rounded bottom
+  ctx.lineTo(x + 8, y - 2);
+  ctx.arc(x, y - 2, 8, 0, Math.PI, true);    // rounded top (shoulders)
   ctx.fill();
 
-  // Eyes
-  ctx.fillStyle = "#333";
-  ctx.fillRect(x - 4, y - 12, 2, 3);
-  ctx.fillRect(x + 2, y - 12, 2, 3);
+  // Subtle shirt line
+  const darkerColor = darkenColor(color, 0.12);
+  ctx.strokeStyle = darkerColor;
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(x - 6, y - 2);
+  ctx.lineTo(x + 6, y - 2);
+  ctx.stroke();
 
-  // Local player indicator
-  if (isLocal) {
-    ctx.strokeStyle = "#53d769";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(x, y, 18, 0, Math.PI * 2);
-    ctx.stroke();
+  // Head (round, slightly larger than body width)
+  ctx.fillStyle = "#fdd5a0";
+  ctx.beginPath();
+  ctx.arc(x, y - 12, 9, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Eyes (with blinking)
+  if (!player._blinkState) {
+    let seed = 0;
+    for (let i = 0; i < player.id.length; i++) seed += player.id.charCodeAt(i);
+    player._blinkState = {
+      nextBlink: Date.now() + (seed % 5000),
+      blinkCount: 0,
+      blinkPhase: 0,
+    };
   }
+  const bs = player._blinkState;
+  const now = Date.now();
+  let isBlinking = false;
+
+  if (bs.blinkPhase > 0) {
+    // In a blink sequence
+    isBlinking = (bs.blinkPhase % 300) < 150;  // 150ms closed, 150ms open per blink
+    bs.blinkPhase = now - bs._blinkStart;
+    const totalDuration = bs.blinkCount * 300;
+    if (bs.blinkPhase >= totalDuration) {
+      bs.blinkPhase = 0;
+      bs.nextBlink = now + 8000 + Math.random() * 37000;  // next in 8~45s
+    }
+  } else if (now >= bs.nextBlink) {
+    // Start new blink sequence (1 or 2 blinks)
+    bs.blinkCount = Math.random() < 0.5 ? 1 : 2;
+    bs.blinkPhase = 1;
+    bs._blinkStart = now;
+    isBlinking = true;
+  }
+
+  ctx.fillStyle = "#2a2a3a";
+  if (isBlinking) {
+    ctx.fillRect(x - 4, y - 12.5, 2.4, 1);
+    ctx.fillRect(x + 1.6, y - 12.5, 2.4, 1);
+  } else {
+    ctx.beginPath();
+    ctx.arc(x - 3, y - 12, 1.2, 0, Math.PI * 2);
+    ctx.arc(x + 3, y - 12, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Blush
+  ctx.fillStyle = "rgba(255,140,140,0.25)";
+  ctx.beginPath();
+  ctx.arc(x - 6, y - 10, 2, 0, Math.PI * 2);
+  ctx.arc(x + 6, y - 10, 2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function darkenColor(hex, amount) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgb(${Math.round(r * (1 - amount))},${Math.round(g * (1 - amount))},${Math.round(b * (1 - amount))})`;
+}
+
+// Convert game coords to screen coords (bypassing canvas transform)
+function gameToScreen(gx, gy) {
+  return {
+    x: Math.round((gx - cameraX) * gameScale),
+    y: Math.round((gy - cameraY) * gameScale),
+  };
 }
 
 function drawPlayerLabel(player) {
   const { x, y, name, status } = player;
 
-  ctx.font = "bold 11px 'Courier New', monospace";
-  ctx.textAlign = "center";
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const isLocal = player.id === myId;
   const nameText = name || "???";
-  const nameWidth = ctx.measureText(nameText).width;
-  ctx.fillStyle = "rgba(0,0,0,0.6)";
-  ctx.fillRect(x - nameWidth / 2 - 4, y - 30, nameWidth + 8, 14);
-  ctx.fillStyle = "#fff";
-  ctx.fillText(nameText, x, y - 20);
+  const px = 4, py = 4;
+  const fade = 12;
 
+  // Name label
+  ctx.font = "bold 16px 'MiSans', sans-serif";
+  ctx.letterSpacing = "0.32px";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  const nameWidth = Math.ceil(ctx.measureText(nameText).width);
+  const s = gameToScreen(x, y);
+  const lw = nameWidth + px * 2 + fade * 2;
+  const lh = 16 + py * 2;
+  const lx = Math.round(s.x - lw / 2);
+  const ly = Math.round(s.y - 34 * gameScale - py);
+  const grad = ctx.createLinearGradient(lx, 0, lx + lw, 0);
+  grad.addColorStop(0, "rgba(0,0,0,0)");
+  grad.addColorStop(fade * 0.4 / lw, "rgba(0,0,0,0.15)");
+  grad.addColorStop(fade / lw, "rgba(0,0,0,0.5)");
+  grad.addColorStop(0.5, "rgba(0,0,0,0.55)");
+  grad.addColorStop(1 - fade / lw, "rgba(0,0,0,0.5)");
+  grad.addColorStop(1 - fade * 0.4 / lw, "rgba(0,0,0,0.15)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(lx, ly, lw, lh);
+  ctx.fillStyle = isLocal ? "#fff" : "#4DA6FF";
+  ctx.fillText(nameText, lx + fade + px, ly + lh / 2);
+
+  // Status emoji above name label
+  const emojiY = ly - 4;
   if (player.isFocusing) {
-    // Status emoji on left, fire drawn on right by drawPlayerFire
-    ctx.font = "14px serif";
+    ctx.font = "16px 'MiSans', sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(STATUS_EMOJI[player.focusCategory] || STATUS_EMOJI[status] || "", x - 8, y - 36);
+    ctx.textBaseline = "bottom";
+    ctx.fillText(STATUS_EMOJI[player.focusCategory] || STATUS_EMOJI[status] || "", s.x, emojiY);
   } else if (player.id === myId && autoWalking) {
-    // Auto-walking: white text with soft shadow
-    ctx.save();
-    ctx.font = "bold 9px 'Courier New', monospace";
+    ctx.font = "16px 'MiSans', sans-serif";
     ctx.textAlign = "center";
-    ctx.shadowColor = "rgba(0,0,0,0.4)";
-    ctx.shadowBlur = 4;
-    ctx.shadowOffsetX = 1;
-    ctx.shadowOffsetY = 1;
+    ctx.textBaseline = "bottom";
     ctx.fillStyle = "#fff";
-    ctx.fillText(t("grabCoffee"), x, y - 36);
-    ctx.restore();
+    ctx.fillText(t("grabCoffee"), s.x, emojiY);
   } else if (player.id === myId && emojiSuppressUntil && Date.now() < emojiSuppressUntil) {
-    // Emoji suppressed (just entered Focus Zone or just ended focus)
+    // suppressed
   } else {
-    ctx.font = "16px serif";
-    ctx.fillText(STATUS_EMOJI[status] || "", x, y - 34);
+    ctx.font = "16px 'MiSans', sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(STATUS_EMOJI[status] || "", s.x, emojiY);
   }
+  ctx.restore();
+}
+
+function drawChatBubble(player) {
+  const bubble = chatBubbles[player.id];
+  if (!bubble) return;
+  const elapsed = Date.now() - bubble.time;
+  if (elapsed > BUBBLE_DURATION) {
+    delete chatBubbles[player.id];
+    return;
+  }
+
+  const alpha = elapsed > BUBBLE_DURATION - 1000 ? (BUBBLE_DURATION - elapsed) / 1000 : 1;
+
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.globalAlpha = alpha;
+  ctx.font = "16px 'MiSans', sans-serif";
+  ctx.letterSpacing = "0.32px";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  const s = gameToScreen(player.x, player.y);
+  const by = Math.round(s.y - 56 * gameScale);
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.fillText(bubble.text, s.x + 1, by + 1);
+  ctx.fillStyle = "#fff";
+  ctx.fillText(bubble.text, s.x, by);
+  ctx.restore();
 }
 
 // ============================================================
@@ -813,7 +1004,7 @@ function drawCatBody() {
     }
     // Zzz
     const zFloat = Math.sin(catAnimFrame) * 2;
-    ctx.font = "9px 'Courier New'";
+    ctx.font = "16px 'MiSans', sans-serif";
     ctx.fillStyle = "rgba(255,255,255,0.5)";
     ctx.textAlign = "center";
     ctx.fillText("z", x + 10, y - 8 + zFloat);
@@ -1133,7 +1324,7 @@ function drawCatUI() {
 
   // Ear perk overlay
   if (catData.earPerk && (state === "sit" || state === "sleep")) {
-    ctx.font = "bold 10px 'Courier New'";
+    ctx.font = "bold 16px 'MiSans', sans-serif";
     ctx.fillStyle = "#f5a623";
     ctx.textAlign = "center";
     ctx.fillText("!", x + 8, y - 22);
@@ -1144,10 +1335,10 @@ function drawCatUI() {
     catMiuTimer--;
     const miuAlpha = Math.min(1, catMiuTimer / 20);
     catMiuY -= 0.3;
-    ctx.font = "10px 'Courier New'";
+    ctx.font = "16px 'MiSans', sans-serif";
     ctx.textAlign = "center";
     ctx.fillStyle = `rgba(244,164,96,${miuAlpha * 0.8})`;
-    ctx.fillText("Miu~", catMiuX, catMiuY);
+    ctx.fillText(currentLang === "zh" ? "喵~" : "Meow~", catMiuX, catMiuY);
   }
 }
 
@@ -1190,6 +1381,123 @@ function drawGift(type, gx, gy) {
     ctx.beginPath();
     ctx.arc(gx - 1, gy - 1, 2, 0, Math.PI * 1.5);
     ctx.stroke();
+  }
+}
+
+// ============================================================
+// REACTION EMOJI PARTICLES
+// ============================================================
+
+const reactionEmojis = [];
+
+function spawnReactionEmoji(senderId, targetId, emoji) {
+  // Get sender's current position
+  let sx, sy;
+  if (senderId === myId && localPlayer) {
+    sx = localPlayer.x; sy = localPlayer.y;
+  } else if (otherPlayers[senderId]) {
+    sx = otherPlayers[senderId].x; sy = otherPlayers[senderId].y;
+  } else {
+    return; // sender not visible
+  }
+  reactionEmojis.push({
+    x: sx,
+    y: sy,
+    senderId: senderId,
+    targetId: targetId,
+    emoji: emoji,
+    phase: "rise",   // rise -> pause -> fly -> hover
+    timer: 0,
+  });
+}
+
+function updateAndDrawReactionEmojis() {
+  for (let i = reactionEmojis.length - 1; i >= 0; i--) {
+    const r = reactionEmojis[i];
+    r.timer++;
+
+    // Look up target's current position (they might move)
+    let target = null;
+    if (r.targetId === myId && localPlayer) {
+      target = localPlayer;
+    } else if (otherPlayers[r.targetId]) {
+      target = otherPlayers[r.targetId];
+    }
+
+    // Track sender for pause phase
+    let sender = null;
+    if (r.senderId === myId && localPlayer) {
+      sender = localPlayer;
+    } else if (otherPlayers[r.senderId]) {
+      sender = otherPlayers[r.senderId];
+    }
+
+    const HEAD_OFFSET = 50; // above status emoji
+
+    if (r.phase === "rise") {
+      // Phase 1: Rise from sender body to above head (1s = 60 frames)
+      r.y -= HEAD_OFFSET / 60;
+      if (sender) r.x = sender.x; // follow sender if they move
+      if (r.timer >= 60) {
+        r.phase = "pause";
+        r.timer = 0;
+      }
+    } else if (r.phase === "pause") {
+      // Phase 2: Hover at sender's head for 1s (60 frames)
+      if (sender) {
+        r.x = sender.x;
+        r.y = sender.y - HEAD_OFFSET + Math.sin(r.timer * 0.06) * 1.5;
+      }
+      if (r.timer >= 60) {
+        r.phase = "fly";
+        r.timer = 0;
+      }
+    } else if (r.phase === "fly") {
+      // Phase 3: Fly toward target's head
+      if (target) {
+        const tx = target.x;
+        const ty = target.y - HEAD_OFFSET;
+        const dx = tx - r.x;
+        const dy = ty - r.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > 3) {
+          const speed = Math.max(1.0, dist * 0.035);
+          r.x += (dx / dist) * speed;
+          r.y += (dy / dist) * speed;
+        } else {
+          r.phase = "hover";
+          r.timer = 0;
+        }
+      } else {
+        reactionEmojis.splice(i, 1);
+        continue;
+      }
+      if (r.timer > 240) {
+        r.phase = "hover";
+        r.timer = 0;
+      }
+    } else if (r.phase === "hover") {
+      // Phase 4: Stay above target's head for 5s (300 frames)
+      if (target) {
+        r.x = target.x;
+        r.y = target.y - HEAD_OFFSET + Math.sin(r.timer * 0.04) * 1.5;
+      }
+      if (r.timer >= 300) {
+        reactionEmojis.splice(i, 1);
+        continue;
+      }
+    }
+
+    // Draw in screen space (like status emoji) to avoid scaling artifacts
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.font = "16px 'MiSans', sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const sp = gameToScreen(r.x, r.y);
+    ctx.fillText(r.emoji, sp.x, sp.y);
+    ctx.restore();
   }
 }
 
@@ -1470,7 +1778,7 @@ function drawPlayerFire(player) {
       const fadeOut = cycle > 7000 ? (8000 - cycle) / 1000 : 1;
       ctx.save();
       ctx.globalAlpha = fadeIn * fadeOut;
-      ctx.font = "10px serif";
+      ctx.font = "14px 'MiSans', sans-serif";
       ctx.textAlign = "center";
       ctx.fillText("\u{1F4A7}", player.x + 12, player.y - 16 + sweatBob);
       ctx.restore();
@@ -1523,9 +1831,169 @@ function playPurr() {
 // CAT CLICK HANDLER (pet the cat)
 // ============================================================
 
+// ============================================================
+// EMOJI PICKER & REACTION NOTIFICATIONS
+// ============================================================
+
+let emojiPickerTarget = null;
+let reactionNotifications = [];
+let reactionNotifIdCounter = 0;
+
+function showEmojiPicker(targetId, screenX, screenY) {
+  emojiPickerTarget = targetId;
+  const picker = document.getElementById("emoji-picker");
+  // Show target player's name
+  const targetPlayer = otherPlayers[targetId];
+  const nameEl = document.getElementById("emoji-picker-name");
+  nameEl.textContent = targetPlayer ? (targetPlayer.name || "???") : "???";
+  picker.style.display = "flex";
+  // Position near the click, clamped within viewport
+  const pw = 210, ph = 76;
+  let left = screenX + 10;
+  let top = screenY - ph / 2;
+  if (left + pw > window.innerWidth) left = screenX - pw - 10;
+  if (left < 4) left = 4;
+  if (top < 4) top = 4;
+  if (top + ph > window.innerHeight - 4) top = window.innerHeight - ph - 4;
+  picker.style.left = left + "px";
+  picker.style.top = top + "px";
+  console.log("[REACT] Picker opened for:", targetPlayer?.name, "id:", targetId);
+}
+
+function hideEmojiPicker() {
+  document.getElementById("emoji-picker").style.display = "none";
+  emojiPickerTarget = null;
+}
+
+function sendReaction(emoji) {
+  if (!emojiPickerTarget) return;
+  console.log("[REACT] Sending reaction:", emoji, "to:", emojiPickerTarget);
+  socket.emit("sendReaction", { targetId: emojiPickerTarget, emoji });
+  hideEmojiPicker();
+}
+
+function coloredName(name, id) {
+  return `<span style="color:${lightenColor(hashColor(id), 0.35)};font-weight:bold">[${escapeHtml(name)}]</span>`;
+}
+
+function buildReactionText(data) {
+  if (data.targetId === myId) {
+    return `${coloredName(data.senderName, data.senderId)} ${t("reacted")} ${data.emoji}`;
+  } else {
+    if (currentLang === "zh") {
+      return `${t("reactedTo")} ${coloredName(data.targetName, data.targetId)} ${t("reactedToSuffix")} ${data.emoji}`;
+    }
+    return `${t("reactedTo")} ${coloredName(data.targetName, data.targetId)} ${data.emoji}`;
+  }
+}
+
+function showReactionNotification(data) {
+  if (currentRoom === "rest") {
+    // In Lounge: show as system message in chat panel
+    addReactionChatMessage(data);
+  } else {
+    // In Focus Zone: show in bottom-left notification panel
+    addReactionToPanel(data);
+  }
+}
+
+function addReactionChatMessage(data) {
+  const chatMsgs = document.getElementById("chat-messages");
+  const div = document.createElement("div");
+  div.className = "chat-msg";
+  const d = new Date(data.timestamp);
+  const timeStr = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  const text = buildReactionText(data);
+  div.innerHTML = `<span class="chat-time">${timeStr}</span> <span class="chat-text">${text}</span>`;
+  chatMsgs.appendChild(div);
+  chatMsgs.scrollTop = chatMsgs.scrollHeight;
+}
+
+function addReactionToPanel(data) {
+  const id = ++reactionNotifIdCounter;
+  const text = buildReactionText(data);
+  reactionNotifications.push({ id, text, timestamp: data.timestamp });
+  if (reactionNotifications.length > 10) reactionNotifications.shift();
+  updateNotificationPanel();
+}
+
+function removeNotification(id) {
+  reactionNotifications = reactionNotifications.filter(n => n.id !== id);
+  updateNotificationPanel();
+}
+
+function updateNotificationPanel() {
+  const panel = document.getElementById("reaction-notifications");
+  const list = document.getElementById("reaction-list");
+  list.innerHTML = "";
+  if (reactionNotifications.length === 0) {
+    panel.style.display = "none";
+    return;
+  }
+  panel.style.display = "flex";
+  reactionNotifications.forEach(n => {
+    const d = new Date(n.timestamp);
+    const timeStr = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    const item = document.createElement("div");
+    item.className = "reaction-item";
+    item.innerHTML =
+      `<span class="reaction-time">${timeStr}</span>` +
+      `<span class="reaction-content">${n.text}</span>` +
+      `<button class="reaction-close">&times;</button>`;
+    item.querySelector(".reaction-close").addEventListener("click", () => removeNotification(n.id));
+    list.appendChild(item);
+  });
+}
+
+// Bind emoji button clicks
+document.querySelectorAll(".emoji-btn").forEach(btn => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    sendReaction(btn.dataset.emoji);
+  });
+});
+
 canvas.addEventListener("click", (e) => {
-  if (catData.room !== currentRoom) return;
   const { x: clickX, y: clickY } = screenToGame(e.clientX, e.clientY);
+
+  // If picker is open, close it (unless we clicked another player)
+  const pickerOpen = document.getElementById("emoji-picker").style.display === "flex";
+
+  // Check for player click first (box covers name label + body + shadow)
+  let clickedPlayerId = null;
+  let clickedDist = Infinity;
+  const playersInRoom = [];
+  for (const id in otherPlayers) {
+    const p = otherPlayers[id];
+    if (p.room !== currentRoom) continue;
+    const dx = clickX - p.x;
+    const dy = clickY - p.y;
+    playersInRoom.push({ name: p.name, dx: Math.round(dx), dy: Math.round(dy) });
+    // Rectangular hit area: ±25 horizontal, -40 to +15 vertical (covers name label above head down to feet)
+    if (Math.abs(dx) < 25 && dy > -40 && dy < 15) {
+      const dist = Math.abs(dx) + Math.abs(dy);
+      if (dist < clickedDist) {
+        clickedDist = dist;
+        clickedPlayerId = id;
+      }
+    }
+  }
+  console.log("[REACT] Canvas click at game:", Math.round(clickX), Math.round(clickY),
+    "players:", playersInRoom.length, playersInRoom);
+
+  if (clickedPlayerId) {
+    showEmojiPicker(clickedPlayerId, e.clientX, e.clientY);
+    return;
+  }
+
+  // Close picker if open and clicked elsewhere
+  if (pickerOpen) {
+    hideEmojiPicker();
+    return;
+  }
+
+  // Cat click (original behavior)
+  if (catData.room !== currentRoom) return;
   const dx = clickX - catData.x;
   const dy = clickY - catData.y;
   if (Math.sqrt(dx * dx + dy * dy) < 25) {
@@ -1538,12 +2006,18 @@ socket.on("catPetted", (data) => {
     // Sleeping cat: just tail wag, no heart
     catSleepPetTimer = 40;
   } else {
-    // Awake cat: one gentle heart + "Miu~"
+    // Awake cat: one gentle heart + "Meow~" + meow sound
     spawnOneHeart(data.x, data.y);
     catMiuTimer = 50;
     catMiuX = data.x;
     catMiuY = data.y - 24;
     playPurr();
+    if (soundEnabled && Date.now() > catMeowCooldown) {
+      catMeowAudio.currentTime = 0;
+      catMeowAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+      catMeowAudio.play().catch(() => {});
+      catMeowCooldown = Date.now() + 5000;
+    }
   }
 });
 
@@ -1726,19 +2200,75 @@ chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !isComposing) sendChat();
 });
 
-// --- Chat toggle ---
+// --- Chat toggle + unread badge ---
 const chatToggle = document.getElementById("chat-toggle");
+let unreadCount = 0;
+
 chatToggle.addEventListener("click", () => {
   chatPanel.classList.toggle("collapsed");
-  chatToggle.textContent = chatPanel.classList.contains("collapsed") ? t("chat") : t("hide");
+  const collapsed = chatPanel.classList.contains("collapsed");
+  if (!collapsed) {
+    unreadCount = 0;
+    updateChatBadge();
+  }
+  chatToggle.textContent = collapsed ? t("chat") : t("hide");
 });
 
-function addChatMessage(msg) {
+function updateChatBadge() {
+  const badge = chatToggle.querySelector(".chat-badge");
+  if (unreadCount > 0 && chatPanel.classList.contains("collapsed")) {
+    if (badge) {
+      badge.textContent = unreadCount > 9 ? "9+" : unreadCount;
+    } else {
+      const b = document.createElement("span");
+      b.className = "chat-badge";
+      b.textContent = unreadCount > 9 ? "9+" : unreadCount;
+      chatToggle.appendChild(b);
+    }
+  } else if (badge) {
+    badge.remove();
+  }
+}
+
+// --- Chat bubbles above characters ---
+const chatBubbles = {};
+const BUBBLE_DURATION = 5000;
+
+function addChatMessage(msg, isHistory) {
+  // System messages (join/leave)
+  if (msg.type === "system") {
+    const div = document.createElement("div");
+    div.className = "chat-msg chat-system";
+    const actionText = msg.action === "join" ? t("joinedLounge") : t("leftLounge");
+    div.textContent = `${msg.name} ${actionText}`;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return;
+  }
+
+  // Timestamp
+  const date = new Date(msg.time);
+  const timeStr = `${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}`;
+
+  // Name color from player ID, lightened for dark background
+  const nameColor = msg.id ? lightenColor(hashColor(msg.id), 0.35) : "#f5a623";
+
   const div = document.createElement("div");
   div.className = "chat-msg";
-  div.innerHTML = `<span class="chat-name">${escapeHtml(msg.name)}:</span> <span class="chat-text">${escapeHtml(msg.text)}</span>`;
+  div.innerHTML = `<span class="chat-time">${timeStr}</span> <span class="chat-name" style="color:${nameColor}">${escapeHtml(msg.name)}</span> <span class="chat-text">${escapeHtml(msg.text)}</span>`;
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  // Chat bubble + unread badge (skip for history)
+  if (!isHistory) {
+    if (msg.id) {
+      chatBubbles[msg.id] = { text: msg.text.length > 30 ? msg.text.slice(0, 30) + "..." : msg.text, time: Date.now() };
+    }
+    if (chatPanel.classList.contains("collapsed")) {
+      unreadCount++;
+      updateChatBadge();
+    }
+  }
 }
 
 function escapeHtml(str) {
@@ -1999,17 +2529,375 @@ function saveFocusRecord(taskName, category, durationMs, startTimestamp) {
 }
 
 // ============================================================
-// AUDIO (placeholder - add your own music/sounds here)
+// FOCUS HISTORY UI
+// ============================================================
+
+const historyBtn = document.getElementById("history-btn");
+const historyPopup = document.getElementById("history-popup");
+
+historyBtn.addEventListener("click", () => {
+  renderHistoryPanel();
+  historyPopup.style.display = "flex";
+});
+
+document.getElementById("history-close").addEventListener("click", () => {
+  historyPopup.style.display = "none";
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && historyPopup.style.display !== "none") {
+    historyPopup.style.display = "none";
+  }
+});
+
+function getHistoryRecords() {
+  try {
+    return JSON.parse(localStorage.getItem("focusHistory") || "[]");
+  } catch (e) {
+    return [];
+  }
+}
+
+function getDayKey(timestamp) {
+  const d = new Date(timestamp);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+function getDayLabel(dateStr) {
+  const parts = dateStr.split("-");
+  return parts[1] + "/" + parts[2];
+}
+
+function formatHistoryDuration(ms) {
+  const totalMin = Math.floor(ms / 60000);
+  if (totalMin < 60) return totalMin + " " + t("historyMin");
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return h + t("historyH") + " " + m + t("historyMin");
+}
+
+function deleteHistoryRecord(startTime) {
+  const records = getHistoryRecords();
+  const idx = records.findIndex(r => r.startTime === startTime);
+  if (idx !== -1) {
+    records.splice(idx, 1);
+    localStorage.setItem("focusHistory", JSON.stringify(records));
+  }
+  renderHistoryPanel();
+}
+
+function getCategoryIcon(category) {
+  const icons = { studying: "\u{1F4D6}", working: "\u{1F4BC}", creating: "\u{1F4DD}", reading: "\u{1F4DA}" };
+  return icons[category] || "\u{1F4D6}";
+}
+
+function renderHistoryPanel() {
+  const records = getHistoryRecords();
+  const todayKey = getDayKey(Date.now());
+
+  // Today summary
+  let todayMs = 0;
+  let todayCount = 0;
+  for (const r of records) {
+    if (getDayKey(r.startTime) === todayKey) {
+      todayMs += r.duration;
+      todayCount++;
+    }
+  }
+  document.getElementById("history-today-time").textContent = formatHistoryDuration(todayMs);
+  const sessionsSpan = document.querySelector(".history-today-sessions");
+  sessionsSpan.innerHTML = "";
+  const countSpan = document.createElement("span");
+  countSpan.id = "history-today-count";
+  countSpan.textContent = todayCount;
+  sessionsSpan.appendChild(countSpan);
+  sessionsSpan.appendChild(document.createTextNode(" " + t("historySessions")));
+
+  // Last 7 days chart
+  const dayTotals = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = getDayKey(d.getTime());
+    let total = 0;
+    for (const r of records) {
+      if (getDayKey(r.startTime) === key) total += r.duration;
+    }
+    dayTotals.push({ key, total, label: getDayLabel(key) });
+  }
+
+  const maxMs = Math.max(...dayTotals.map(d => d.total), 1);
+  const chartEl = document.getElementById("history-chart");
+  chartEl.innerHTML = "";
+  for (const day of dayTotals) {
+    const col = document.createElement("div");
+    col.className = "history-bar-col";
+
+    const val = document.createElement("div");
+    val.className = "history-bar-value";
+    if (day.total > 0) {
+      const mins = Math.floor(day.total / 60000);
+      val.textContent = mins >= 60 ? Math.floor(mins / 60) + t("historyH") : mins + "m";
+    }
+    col.appendChild(val);
+
+    const bar = document.createElement("div");
+    bar.className = "history-bar" + (day.key === todayKey ? " today" : "");
+    const pct = day.total > 0 ? Math.max(4, (day.total / maxMs) * 100) : 0;
+    bar.style.height = pct + "%";
+    if (day.total === 0) {
+      bar.style.height = "2px";
+      bar.style.opacity = "0.3";
+    }
+    col.appendChild(bar);
+
+    const lbl = document.createElement("div");
+    lbl.className = "history-bar-label";
+    lbl.textContent = day.label;
+    col.appendChild(lbl);
+
+    chartEl.appendChild(col);
+  }
+
+  // Recent sessions list
+  const listEl = document.getElementById("history-list");
+  listEl.innerHTML = "";
+  if (records.length === 0) {
+    const noData = document.createElement("div");
+    noData.className = "history-no-data";
+    noData.textContent = t("historyNoData");
+    listEl.appendChild(noData);
+    return;
+  }
+
+  const recent = records.slice(-20).reverse();
+  for (const r of recent) {
+    const row = document.createElement("div");
+    row.className = "history-row";
+
+    const icon = document.createElement("span");
+    icon.className = "history-row-icon";
+    icon.textContent = getCategoryIcon(r.category);
+    row.appendChild(icon);
+
+    const info = document.createElement("div");
+    info.className = "history-row-info";
+
+    const task = document.createElement("div");
+    task.className = "history-row-task";
+    task.textContent = r.taskName || getCategoryLabel(r.category);
+    info.appendChild(task);
+
+    const date = document.createElement("div");
+    date.className = "history-row-date";
+    const d = new Date(r.startTime);
+    date.textContent = getDayLabel(getDayKey(r.startTime)) + " " +
+      String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    info.appendChild(date);
+
+    row.appendChild(info);
+
+    const dur = document.createElement("span");
+    dur.className = "history-row-duration";
+    dur.textContent = formatHistoryDuration(r.duration);
+    row.appendChild(dur);
+
+    const del = document.createElement("button");
+    del.className = "history-row-delete";
+    del.textContent = "\u00D7";
+    del.addEventListener("click", () => deleteHistoryRecord(r.startTime));
+    row.appendChild(del);
+
+    listEl.appendChild(row);
+  }
+}
+
+// ============================================================
+// AUDIO
 // ============================================================
 
 let audioCtx = null;
 let musicGain = null;
+let soundEnabled = false;
+
+// Focus sounds (proximity-based, per category)
+const focusSounds = {
+  working: new Audio("/sounds/typing.mp3"),
+  studying: new Audio("/sounds/writing.mp3"),
+  creating: new Audio("/sounds/writing.mp3"),
+  reading: new Audio("/sounds/page-flip.mp3"),
+};
+for (const key in focusSounds) {
+  if (key !== "reading") focusSounds[key].loop = true;
+  focusSounds[key].volume = 0;
+}
+
+const SOUND_MAX_DIST = 150;  // max distance to hear sound (game units)
+const SOUND_MIN_DIST = 20;   // distance for full volume
+const SOUND_MAX_VOL = 0.6;
+let nextPageFlipTime = 0;
+
+function updateFocusSounds() {
+  if (!soundEnabled || !localPlayer) {
+    for (const key in focusSounds) {
+      focusSounds[key].volume = 0;
+      if (!focusSounds[key].paused) focusSounds[key].pause();
+    }
+    return;
+  }
+
+  // Track closest distance per sound category
+  const closest = { working: Infinity, studying: Infinity, creating: Infinity, reading: Infinity };
+
+  for (const id in otherPlayers) {
+    const p = otherPlayers[id];
+    if (p.room !== currentRoom || !p.isFocusing) continue;
+    const cat = p.focusCategory || "working";
+    const dx = localPlayer.x - p.x;
+    const dy = localPlayer.y - p.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (closest[cat] !== undefined && dist < closest[cat]) closest[cat] = dist;
+  }
+
+  // Local player's own focus sound
+  if (isFocusing) {
+    const cat = focusCategory || "working";
+    if (closest[cat] !== undefined) closest[cat] = Math.min(closest[cat], 0);
+  }
+
+  // Update each sound channel
+  for (const cat in focusSounds) {
+    const audio = focusSounds[cat];
+    const dist = closest[cat];
+
+    if (dist > SOUND_MAX_DIST) {
+      audio.volume = 0;
+      if (!audio.paused) audio.pause();
+    } else {
+      const t = Math.max(0, Math.min(1, (SOUND_MAX_DIST - dist) / (SOUND_MAX_DIST - SOUND_MIN_DIST)));
+      const vol = t * t * SOUND_MAX_VOL * (volumeSlider.value / 100);
+
+      if (cat === "reading") {
+        // Play at random 20~40s intervals
+        const now = Date.now();
+        if (now >= nextPageFlipTime) {
+          nextPageFlipTime = now + 20000 + Math.random() * 20000;
+          audio.currentTime = 0;
+          audio.volume = Math.min(1, Math.max(0, vol));
+          audio.play().catch(() => {});
+        }
+      } else {
+        audio.volume = Math.min(1, Math.max(0, vol));
+        if (audio.paused) {
+          audio.play().catch(() => {});
+        }
+      }
+    }
+  }
+}
+
+// Birds chirping (near window, morning only)
+const birdsAudio = new Audio("/sounds/freesound_community-birds-chirping-75156.mp3");
+birdsAudio.loop = true;
+birdsAudio.volume = 0;
+
+const BIRDS_MAX_DIST = 120;
+const BIRDS_MIN_DIST = 20;
+const BIRDS_MAX_VOL = 0.4;
+// Window positions: row 0, columns where c > 1 && c < 30 && c % 4 === 0
+const WINDOW_POSITIONS = [];
+for (let c = 4; c < COLS - 2; c += 4) {
+  WINDOW_POSITIONS.push({ x: c * TILE + TILE / 2, y: TILE / 2 });
+}
+
+function updateBirdsSound() {
+  if (!soundEnabled || !localPlayer) {
+    birdsAudio.volume = 0;
+    if (!birdsAudio.paused) birdsAudio.pause();
+    return;
+  }
+
+  // Morning: 6:00 - 11:00 local time
+  const hour = new Date().getHours();
+  if (hour < 6 || hour >= 11) {
+    birdsAudio.volume = 0;
+    if (!birdsAudio.paused) birdsAudio.pause();
+    return;
+  }
+
+  // Find closest window
+  let closestDist = Infinity;
+  for (const wp of WINDOW_POSITIONS) {
+    const dx = localPlayer.x - wp.x;
+    const dy = localPlayer.y - wp.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < closestDist) closestDist = dist;
+  }
+
+  if (closestDist > BIRDS_MAX_DIST) {
+    birdsAudio.volume = 0;
+    if (!birdsAudio.paused) birdsAudio.pause();
+  } else {
+    const t = Math.max(0, Math.min(1, (BIRDS_MAX_DIST - closestDist) / (BIRDS_MAX_DIST - BIRDS_MIN_DIST)));
+    const vol = t * t * BIRDS_MAX_VOL * (volumeSlider.value / 100);
+    birdsAudio.volume = Math.min(1, Math.max(0, vol));
+    if (birdsAudio.paused) {
+      birdsAudio.play().catch(() => {});
+    }
+  }
+}
+
+// Cat meow (proximity-triggered)
+const catMeowAudio = new Audio("/sounds/cat-meow.mp3");
+const CAT_MEOW_DIST = 60;
+let catWasNear = false;
+let catMeowCooldown = 0;
+
+function updateCatMeow() {
+  if (!soundEnabled || !localPlayer || catData.room !== currentRoom) {
+    catWasNear = false;
+    return;
+  }
+
+  const dx = localPlayer.x - catData.x;
+  const dy = localPlayer.y - catData.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const isNear = dist < CAT_MEOW_DIST;
+  const now = Date.now();
+
+  // Trigger on entering proximity (only when sit/wander/curious)
+  const catState = catData.state;
+  if (isNear && !catWasNear && now > catMeowCooldown && (catState === "sit" || catState === "wander" || catState === "curious")) {
+    if (Math.random() < 0.2) {
+      catMeowAudio.currentTime = 0;
+      catMeowAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+      catMeowAudio.play().catch(() => {});
+      catMeowCooldown = now + 10000;
+      // Floating text
+      catMiuTimer = 50;
+      catMiuX = catData.x;
+      catMiuY = catData.y - 24;
+    }
+  }
+  catWasNear = isNear;
+}
 
 function startMusic() {}
 function stopMusic() {}
 function switchMusic() {}
 
-musicToggle.addEventListener("click", () => {});
+musicToggle.addEventListener("click", () => {
+  soundEnabled = !soundEnabled;
+  musicToggle.textContent = soundEnabled ? t("soundOn") : t("soundOff");
+  if (!soundEnabled) {
+    for (const key in focusSounds) {
+      focusSounds[key].pause();
+      focusSounds[key].volume = 0;
+    }
+    birdsAudio.pause();
+    birdsAudio.volume = 0;
+  }
+});
 volumeSlider.addEventListener("input", () => {});
 
 // ============================================================
@@ -2132,12 +3020,26 @@ socket.on("chatMessage", (msg) => {
 
 socket.on("chatHistory", (history) => {
   for (const msg of history) {
-    addChatMessage(msg);
+    addChatMessage(msg, true);
   }
 });
 
 socket.on("catUpdate", (data) => {
   catData = data;
+});
+
+socket.on("emojiReaction", (data) => {
+  console.log("[REACT] Received emojiReaction:", data.senderName, "->", data.targetName, data.emoji,
+    "room:", data.room, "myRoom:", currentRoom, "myId:", myId,
+    "iAmSender:", data.senderId === myId, "iAmTarget:", data.targetId === myId);
+  // Only show floating emoji if we're in the same room
+  if (data.room === currentRoom) {
+    spawnReactionEmoji(data.senderId, data.targetId, data.emoji);
+  }
+  // Show notification to both sender and target
+  if (data.targetId === myId || data.senderId === myId) {
+    showReactionNotification(data);
+  }
 });
 
 function updateOnlineCount() {
@@ -2149,8 +3051,8 @@ function updateOnlineCount() {
   }
   const total = focusCount + loungeCount;
   onlineTotal.textContent = `🟢 ${total}`;
-  onlineFocus.textContent = `📖 ${focusCount}`;
-  onlineLounge.textContent = `☕ ${loungeCount}`;
+  onlineFocus.textContent = `📖 ${t("focusZone")}: ${focusCount}`;
+  onlineLounge.textContent = `☕ ${t("lounge")}: ${loungeCount}`;
 }
 
 // ============================================================
@@ -2197,6 +3099,11 @@ function update() {
   if (isFocusing && focusStartTime) {
     focusTimeValue.textContent = formatFocusTime(Date.now() - focusStartTime);
   }
+
+  // Proximity focus sounds
+  updateFocusSounds();
+  updateCatMeow();
+  updateBirdsSound();
 
   // Wandering idle: 5min → daydreaming, 10min → auto-walk to Lounge
   if (!isFocusing && currentRoom === "focus" && !autoWalking) {
@@ -2299,7 +3206,8 @@ function draw() {
   // Apply camera transform
   updateCamera();
   ctx.save();
-  ctx.setTransform(gameScale, 0, 0, gameScale, -cameraX * gameScale, -cameraY * gameScale);
+  const gs = gameScale * dpr;
+  ctx.setTransform(gs, 0, 0, gs, -cameraX * gs, -cameraY * gs);
 
   portalDrawnThisFrame = false;
   drawRoom();
@@ -2312,6 +3220,7 @@ function draw() {
       drawGiftPile(otherPlayers[id]);
       drawPlayerLabel(otherPlayers[id]);
       drawPlayerFire(otherPlayers[id]);
+      drawChatBubble(otherPlayers[id]);
     }
   }
   if (localPlayer) {
@@ -2319,6 +3228,7 @@ function draw() {
     drawGiftPile(localPlayer);
     drawPlayerLabel(localPlayer);
     drawPlayerFire(localPlayer);
+    drawChatBubble(localPlayer);
   }
 
   updateAndDrawHearts();
@@ -2328,6 +3238,9 @@ function draw() {
   // Restore to screen space for vignette
   ctx.restore();
   drawVignette();
+
+  // Draw reaction emojis AFTER vignette so they are not darkened
+  updateAndDrawReactionEmojis();
 }
 
 function drawVignette() {

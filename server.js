@@ -28,15 +28,30 @@ const PORTAL_POS = {
 // Furniture positions where cat can sit/sleep (in pixel coords)
 const FURNITURE = {
   focus: [
-    { x: 5 * TILE, y: 4 * TILE, type: "desk" },
-    { x: 15 * TILE, y: 4 * TILE, type: "desk" },
-    { x: 25 * TILE, y: 10 * TILE, type: "desk" },
-    { x: 5 * TILE, y: 10 * TILE, type: "desk" },
+    // 1-person desks
+    { x: 3 * TILE, y: 3.5 * TILE, type: "desk" },
+    { x: 27 * TILE, y: 3.5 * TILE, type: "desk" },
+    { x: 3 * TILE, y: 11.5 * TILE, type: "desk" },
+    { x: 27 * TILE, y: 11.5 * TILE, type: "desk" },
+    // 2-person desks
+    { x: 9 * TILE, y: 3.5 * TILE, type: "desk" },
+    { x: 22 * TILE, y: 3.5 * TILE, type: "desk" },
+    { x: 9 * TILE, y: 11.5 * TILE, type: "desk" },
+    { x: 22 * TILE, y: 11.5 * TILE, type: "desk" },
+    // 4-person desks
+    { x: 15.5 * TILE, y: 3.5 * TILE, type: "desk" },
+    { x: 15.5 * TILE, y: 11.5 * TILE, type: "desk" },
+    // Rug
     { x: 15.5 * TILE, y: 7.5 * TILE, type: "rug" },
-    { x: 5 * TILE, y: 1.5 * TILE, type: "bookshelf" },
-    { x: 27 * TILE, y: 1.5 * TILE, type: "bookshelf" },
-    { x: 10 * TILE, y: 2 * TILE, type: "window" },
-    { x: 22 * TILE, y: 2 * TILE, type: "window" },
+    // Bookshelves
+    { x: 4 * TILE, y: 1.5 * TILE, type: "bookshelf" },
+    { x: 12 * TILE, y: 1.5 * TILE, type: "bookshelf" },
+    { x: 20 * TILE, y: 1.5 * TILE, type: "bookshelf" },
+    { x: 28 * TILE, y: 1.5 * TILE, type: "bookshelf" },
+    // Windows (between bookshelf groups)
+    { x: 8 * TILE, y: 2 * TILE, type: "window" },
+    { x: 16 * TILE, y: 2 * TILE, type: "window" },
+    { x: 24 * TILE, y: 2 * TILE, type: "window" },
   ],
   rest: [
     { x: 3 * TILE, y: 4.5 * TILE, type: "sofa" },
@@ -51,6 +66,10 @@ const FURNITURE = {
 };
 
 const GIFT_TYPES = ["fish", "leaf", "yarn"];
+
+const REACTION_COOLDOWN = 3000;
+const reactionCooldowns = {};
+const VALID_REACTIONS = ["👋", "💪", "❤️", "⭐"];
 
 // Gift pile for idle Lounge players
 const PILE_GIFT_INTERVAL = 30 * 60 * 1000; // 30min
@@ -67,24 +86,40 @@ function buildFocusMap() {
     const row = [];
     for (let c = 0; c < COLS; c++) {
       if (r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1) row.push(1);
-      else if (r === 1 && c >= 2 && c <= 7) row.push(3);
-      else if (r === 1 && c >= 13 && c <= 18) row.push(3);
-      else if (r === 1 && c >= 24 && c <= 29) row.push(3);
-      else if (r >= 4 && r <= 5 && c >= 4 && c <= 6) row.push(2);
-      else if (r >= 4 && r <= 5 && c === 7) row.push(7);
-      else if (r >= 4 && r <= 5 && c >= 14 && c <= 16) row.push(2);
-      else if (r >= 4 && r <= 5 && c === 17) row.push(7);
-      else if (r >= 4 && r <= 5 && c >= 24 && c <= 26) row.push(2);
-      else if (r >= 4 && r <= 5 && c === 27) row.push(7);
-      else if (r >= 10 && r <= 11 && c >= 4 && c <= 6) row.push(2);
-      else if (r >= 10 && r <= 11 && c === 7) row.push(7);
-      else if (r >= 10 && r <= 11 && c >= 14 && c <= 16) row.push(2);
-      else if (r >= 10 && r <= 11 && c === 17) row.push(7);
-      else if (r >= 10 && r <= 11 && c >= 24 && c <= 26) row.push(2);
-      else if (r >= 10 && r <= 11 && c === 27) row.push(7);
-      else if ((r === 1 && c === 1) || (r === 1 && c === COLS - 2)) row.push(4);
-      else if ((r === ROWS - 2 && c === 1) || (r === ROWS - 2 && c === COLS - 2)) row.push(4);
-      else if (r >= 7 && r <= 8 && c >= 12 && c <= 19) row.push(5);
+      // Bookshelves along top wall (4 groups)
+      else if (r === 1 && c >= 2 && c <= 5) row.push(3);
+      else if (r === 1 && c >= 10 && c <= 13) row.push(3);
+      else if (r === 1 && c >= 18 && c <= 21) row.push(3);
+      else if (r === 1 && c >= 26 && c <= 29) row.push(3);
+      // Plants in corners and bottom
+      else if (r === 1 && (c === 1 || c === 30)) row.push(4);
+      else if (r === 14 && (c === 1 || c === 30)) row.push(4);
+      else if (r === 16 && (c === 1 || c === 30)) row.push(4);
+      // --- Top desk row (r=3,4) ---
+      else if ((r === 3 || r === 4) && c === 3) row.push(2);
+      else if ((r === 3 || r === 4) && c === 4) row.push(7);
+      else if ((r === 3 || r === 4) && (c === 8 || c === 9)) row.push(2);
+      else if ((r === 3 || r === 4) && c === 10) row.push(7);
+      else if (r === 3 && c >= 14 && c <= 17) row.push(2);
+      else if (r === 4 && c >= 14 && c <= 17) row.push(7);
+      else if ((r === 3 || r === 4) && (c === 21 || c === 22)) row.push(2);
+      else if ((r === 3 || r === 4) && c === 23) row.push(7);
+      else if ((r === 3 || r === 4) && c === 27) row.push(2);
+      else if ((r === 3 || r === 4) && c === 28) row.push(7);
+      // --- Bottom desk row (r=11,12) ---
+      else if ((r === 11 || r === 12) && c === 3) row.push(2);
+      else if ((r === 11 || r === 12) && c === 4) row.push(7);
+      else if ((r === 11 || r === 12) && (c === 8 || c === 9)) row.push(2);
+      else if ((r === 11 || r === 12) && c === 10) row.push(7);
+      else if (r === 11 && c >= 14 && c <= 17) row.push(2);
+      else if (r === 12 && c >= 14 && c <= 17) row.push(7);
+      else if ((r === 11 || r === 12) && (c === 21 || c === 22)) row.push(2);
+      else if ((r === 11 || r === 12) && c === 23) row.push(7);
+      else if ((r === 11 || r === 12) && c === 27) row.push(2);
+      else if ((r === 11 || r === 12) && c === 28) row.push(7);
+      // Center rug
+      else if (r >= 7 && r <= 8 && c >= 11 && c <= 20) row.push(5);
+      // Portal (bottom center)
       else if (r === ROWS - 2 && c >= 14 && c <= 17) row.push(8);
       else row.push(0);
     }
@@ -582,6 +617,37 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("sendReaction", (data) => {
+    console.log(`[REACT] received sendReaction from ${socket.id}`, JSON.stringify(data));
+    if (!players[socket.id]) { console.log("[REACT] FAIL: no sender player"); return; }
+    if (!data || typeof data !== "object") { console.log("[REACT] FAIL: bad data"); return; }
+    const sender = players[socket.id];
+    const target = players[data.targetId];
+    if (!target) { console.log("[REACT] FAIL: target not found, targetId:", data.targetId); return; }
+    if (sender.room !== target.room) { console.log("[REACT] FAIL: room mismatch", sender.room, target.room); return; }
+    if (!VALID_REACTIONS.includes(data.emoji)) { console.log("[REACT] FAIL: invalid emoji", JSON.stringify(data.emoji), "len:", data.emoji.length); return; }
+
+    // Per sender-target pair cooldown
+    const key = `${socket.id}->${data.targetId}`;
+    const now = Date.now();
+    if (reactionCooldowns[key] && now - reactionCooldowns[key] < REACTION_COOLDOWN) { console.log("[REACT] FAIL: cooldown"); return; }
+    reactionCooldowns[key] = now;
+
+    const payload = {
+      senderId: socket.id,
+      senderName: sender.name,
+      targetId: data.targetId,
+      targetName: target.name,
+      emoji: data.emoji,
+      room: sender.room,
+      x: target.x,
+      y: target.y,
+      timestamp: now,
+    };
+    console.log(`[REACT] OK ${sender.name} -> ${target.name} ${data.emoji} (room: ${sender.room})`);
+    io.emit("emojiReaction", payload);
+  });
+
   socket.on("playerMove", (data) => {
     if (!players[socket.id]) return;
     const p = players[socket.id];
@@ -642,6 +708,7 @@ io.on("connection", (socket) => {
       x: spawn.x,
       y: spawn.y,
     });
+
 
     const oldRoomPlayers = getPlayersInRoom(oldRoom);
     if (cat.room === oldRoom && oldRoomPlayers.length === 0 && !cat.pendingRoom) {
@@ -713,6 +780,12 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log(`Player disconnected: ${socket.id}`);
+    // Clean up reaction cooldowns for this player
+    for (const key of Object.keys(reactionCooldowns)) {
+      if (key.startsWith(socket.id + "->") || key.endsWith("->" + socket.id)) {
+        delete reactionCooldowns[key];
+      }
+    }
     delete players[socket.id];
     io.emit("playerLeft", socket.id);
   });
