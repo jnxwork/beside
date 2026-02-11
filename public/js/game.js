@@ -283,7 +283,7 @@ const TILE = 32;
 const COLS = 32;
 const ROWS = 18;
 const PLAYER_SIZE = 24;
-const SPEED = 3;
+const SPEED = 2;
 const PORTAL_TILE = 8; // New tile type for portals
 
 // --- Current room ---
@@ -1330,14 +1330,14 @@ function drawCatUI() {
     ctx.fillText("!", x + 8, y - 22);
   }
 
-  // Floating "Miu~" when petted
+  // Floating "Miu~" when petted (3s = 180 frames, last 30 frames fade out)
   if (catMiuTimer > 0) {
     catMiuTimer--;
-    const miuAlpha = Math.min(1, catMiuTimer / 20);
-    catMiuY -= 0.3;
-    ctx.font = "16px 'MiSans', sans-serif";
+    const miuAlpha = catMiuTimer < 30 ? catMiuTimer / 30 : 1;
+    catMiuY -= 0.15;
+    ctx.font = "12px 'MiSans', sans-serif";
     ctx.textAlign = "center";
-    ctx.fillStyle = `rgba(244,164,96,${miuAlpha * 0.8})`;
+    ctx.fillStyle = `rgba(255,255,255,${miuAlpha * 0.9})`;
     ctx.fillText(currentLang === "zh" ? "喵~" : "Meow~", catMiuX, catMiuY);
   }
 }
@@ -2006,17 +2006,17 @@ socket.on("catPetted", (data) => {
     // Sleeping cat: just tail wag, no heart
     catSleepPetTimer = 40;
   } else {
-    // Awake cat: one gentle heart + "Meow~" + meow sound
+    // Awake cat: one gentle heart + meow sound + floating text
     spawnOneHeart(data.x, data.y);
-    catMiuTimer = 50;
-    catMiuX = data.x;
-    catMiuY = data.y - 24;
     playPurr();
     if (soundEnabled && Date.now() > catMeowCooldown) {
       catMeowAudio.currentTime = 0;
       catMeowAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
       catMeowAudio.play().catch(() => {});
       catMeowCooldown = Date.now() + 5000;
+      catMiuTimer = 180;
+      catMiuX = data.x;
+      catMiuY = data.y - 24;
     }
   }
 });
@@ -2404,6 +2404,7 @@ focusPortalYes.addEventListener("click", () => {
   endFocus();
   // Now trigger the room change
   const newRoom = currentRoom === "focus" ? "rest" : "focus";
+  playDoorSound();
   socket.emit("changeRoom", newRoom);
   portalCooldown = 60;
 });
@@ -2796,34 +2797,60 @@ function updateFocusSounds() {
   }
 }
 
-// Birds chirping (near window, morning only)
-const birdsAudio = new Audio("/sounds/freesound_community-birds-chirping-75156.mp3");
-birdsAudio.loop = true;
-birdsAudio.volume = 0;
+// Time-of-day ambient sounds (near window, proximity-based)
+const ambientSounds = {
+  morning: new Audio("/sounds/morning.mp3"),         // 6:00 - 11:00
+  daytime: new Audio("/sounds/yuk1to-street-ambience-traffic-410714.mp3"), // 11:00 - 17:00
+  night:   new Audio("/sounds/night.mp3"),            // 20:00 - 6:00
+};
+for (const key in ambientSounds) {
+  ambientSounds[key].loop = true;
+  ambientSounds[key].volume = 0;
+}
+let currentAmbientKey = null;
 
-const BIRDS_MAX_DIST = 120;
-const BIRDS_MIN_DIST = 20;
-const BIRDS_MAX_VOL = 0.4;
+const AMBIENT_MAX_DIST = 120;
+const AMBIENT_MIN_DIST = 20;
+const AMBIENT_MAX_VOL = 0.4;
 // Window positions: row 0, columns where c > 1 && c < 30 && c % 4 === 0
 const WINDOW_POSITIONS = [];
 for (let c = 4; c < COLS - 2; c += 4) {
   WINDOW_POSITIONS.push({ x: c * TILE + TILE / 2, y: TILE / 2 });
 }
 
-function updateBirdsSound() {
+function getAmbientKey() {
+  const hour = new Date().getHours();
+  if (hour >= 6 && hour < 11) return "morning";
+  if (hour >= 11 && hour < 17) return "daytime";
+  if (hour >= 20 || hour < 6) return "night";
+  return "daytime"; // 17:00 - 20:00 dusk: same as daytime for now
+}
+
+function stopAllAmbient() {
+  for (const key in ambientSounds) {
+    ambientSounds[key].volume = 0;
+    if (!ambientSounds[key].paused) ambientSounds[key].pause();
+  }
+  currentAmbientKey = null;
+}
+
+function updateAmbientSound() {
   if (!soundEnabled || !localPlayer) {
-    birdsAudio.volume = 0;
-    if (!birdsAudio.paused) birdsAudio.pause();
+    stopAllAmbient();
     return;
   }
 
-  // Morning: 6:00 - 11:00 local time
-  const hour = new Date().getHours();
-  if (hour < 6 || hour >= 11) {
-    birdsAudio.volume = 0;
-    if (!birdsAudio.paused) birdsAudio.pause();
-    return;
+  const wantKey = getAmbientKey();
+
+  // Stop old ambient if time period changed
+  if (wantKey !== currentAmbientKey) {
+    stopAllAmbient();
+    currentAmbientKey = wantKey;
   }
+
+  if (!wantKey) return;
+
+  const audio = ambientSounds[wantKey];
 
   // Find closest window
   let closestDist = Infinity;
@@ -2834,17 +2861,26 @@ function updateBirdsSound() {
     if (dist < closestDist) closestDist = dist;
   }
 
-  if (closestDist > BIRDS_MAX_DIST) {
-    birdsAudio.volume = 0;
-    if (!birdsAudio.paused) birdsAudio.pause();
+  if (closestDist > AMBIENT_MAX_DIST) {
+    audio.volume = 0;
+    if (!audio.paused) audio.pause();
   } else {
-    const t = Math.max(0, Math.min(1, (BIRDS_MAX_DIST - closestDist) / (BIRDS_MAX_DIST - BIRDS_MIN_DIST)));
-    const vol = t * t * BIRDS_MAX_VOL * (volumeSlider.value / 100);
-    birdsAudio.volume = Math.min(1, Math.max(0, vol));
-    if (birdsAudio.paused) {
-      birdsAudio.play().catch(() => {});
+    const t = Math.max(0, Math.min(1, (AMBIENT_MAX_DIST - closestDist) / (AMBIENT_MAX_DIST - AMBIENT_MIN_DIST)));
+    const vol = t * t * AMBIENT_MAX_VOL * (volumeSlider.value / 100);
+    audio.volume = Math.min(1, Math.max(0, vol));
+    if (audio.paused) {
+      audio.play().catch(() => {});
     }
   }
+}
+
+// Door sound (played once on portal transit)
+const doorAudio = new Audio("/sounds/door.MP3");
+function playDoorSound() {
+  if (!soundEnabled) return;
+  doorAudio.currentTime = 0;
+  doorAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+  doorAudio.play().catch(() => {});
 }
 
 // Cat meow (proximity-triggered)
@@ -2874,7 +2910,7 @@ function updateCatMeow() {
       catMeowAudio.play().catch(() => {});
       catMeowCooldown = now + 10000;
       // Floating text
-      catMiuTimer = 50;
+      catMiuTimer = 180;
       catMiuX = catData.x;
       catMiuY = catData.y - 24;
     }
@@ -2894,8 +2930,7 @@ musicToggle.addEventListener("click", () => {
       focusSounds[key].pause();
       focusSounds[key].volume = 0;
     }
-    birdsAudio.pause();
-    birdsAudio.volume = 0;
+    stopAllAmbient();
   }
 });
 volumeSlider.addEventListener("input", () => {});
@@ -3103,7 +3138,7 @@ function update() {
   // Proximity focus sounds
   updateFocusSounds();
   updateCatMeow();
-  updateBirdsSound();
+  updateAmbientSound();
 
   // Wandering idle: 5min → daydreaming, 10min → auto-walk to Lounge
   if (!isFocusing && currentRoom === "focus" && !autoWalking) {
@@ -3181,6 +3216,7 @@ function update() {
       portalCooldown = 30;
     } else if (!isFocusing) {
       const newRoom = currentRoom === "focus" ? "rest" : "focus";
+      playDoorSound();
       socket.emit("changeRoom", newRoom);
       portalCooldown = 60;
     }

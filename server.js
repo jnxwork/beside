@@ -613,6 +613,15 @@ io.on("connection", (socket) => {
       if (!wasSleeping && cat.state !== "gift_deliver") {
         cat.state = "sit";
         cat.stateTimer = 200;
+        cat.targetX = cat.x;
+        cat.targetY = cat.y;
+        // Immediately broadcast so client sees the stop
+        io.emit("catUpdate", {
+          x: Math.round(cat.x), y: Math.round(cat.y),
+          room: cat.room, state: cat.state,
+          gift: cat.gift, earPerk: cat.earPerk > 0,
+          onFurniture: cat.onFurniture,
+        });
       }
     }
   });
