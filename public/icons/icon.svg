@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#2a2838"/>
+  <!-- house body -->
+  <rect x="136" y="240" width="240" height="180" rx="12" fill="#4a4568"/>
+  <!-- roof -->
+  <polygon points="256,140 116,250 396,250" fill="#6b5b95"/>
+  <!-- window glow left -->
+  <rect x="172" y="280" width="60" height="56" rx="6" fill="#ffd866" opacity="0.85"/>
+  <!-- window glow right -->
+  <rect x="280" y="280" width="60" height="56" rx="6" fill="#ffd866" opacity="0.85"/>
+  <!-- door -->
+  <rect x="228" y="340" width="56" height="80" rx="6" fill="#3d3554"/>
+  <!-- heart -->
+  <g transform="translate(256,190) scale(0.5)">
+    <path d="M0,30 A30,30,0,0,1,-50,-10 A30,30,0,0,1,0,-50 A30,30,0,0,1,50,-10 A30,30,0,0,1,0,30Z" fill="#ff6b8a"/>
+  </g>
+  <!-- star sparkles -->
+  <circle cx="140" cy="170" r="4" fill="#ffd866" opacity="0.7"/>
+  <circle cx="380" cy="160" r="3" fill="#ffd866" opacity="0.6"/>
+  <circle cx="350" cy="195" r="2.5" fill="#ffd866" opacity="0.5"/>
+</svg>

@@ -1,0 +1,30 @@
+{
+  "columns": 13,
+  "image": "tileset_game.png",
+  "imageheight": 32,
+  "imagewidth": 416,
+  "margin": 0,
+  "name": "Game Tiles",
+  "spacing": 0,
+  "tilecount": 13,
+  "tiledversion": "1.11.2",
+  "tileheight": 32,
+  "tilewidth": 32,
+  "type": "tileset",
+  "version": "1.10",
+  "tiles": [
+    { "id": 0,  "type": "floor",          "color": "#D4C8A0", "label": "FL" },
+    { "id": 1,  "type": "wall",           "color": "#6A6A80", "label": "WL" },
+    { "id": 2,  "type": "desk",           "color": "#8A6030", "label": "DK" },
+    { "id": 3,  "type": "bookshelf",      "color": "#5C4020", "label": "BS" },
+    { "id": 4,  "type": "plant",          "color": "#40A050", "label": "PL" },
+    { "id": 5,  "type": "rug",            "color": "#C0A080", "label": "RG" },
+    { "id": 6,  "type": "unused",         "color": "#808080", "label": "XX" },
+    { "id": 7,  "type": "chair",          "color": "#50A070", "label": "CH" },
+    { "id": 8,  "type": "portal",         "color": "#E06080", "label": "PT" },
+    { "id": 9,  "type": "sofa",           "color": "#A050A0", "label": "SF" },
+    { "id": 10, "type": "coffee_machine", "color": "#505050", "label": "CM" },
+    { "id": 11, "type": "window",         "color": "#A0C8F0", "label": "WN" },
+    { "id": 12, "type": "door",           "color": "#E0C040", "label": "DR" }
+  ]
+}

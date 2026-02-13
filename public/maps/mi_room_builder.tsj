@@ -1,0 +1,15 @@
+{
+  "columns": 76,
+  "image": "../assets/moderninteriors-win/1_Interiors/32x32/Room_Builder_32x32.png",
+  "imageheight": 3616,
+  "imagewidth": 2432,
+  "margin": 0,
+  "name": "MI Room Builder",
+  "spacing": 0,
+  "tilecount": 8588,
+  "tiledversion": "1.11.2",
+  "tileheight": 32,
+  "tilewidth": 32,
+  "type": "tileset",
+  "version": "1.10"
+}

@@ -4,6 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Stay Together</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#2a2838">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <link rel="stylesheet" crossorigin="anonymous" href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -784,6 +789,80 @@
       bottom: 60px;
     }
 
+    /* Character picker grid */
+    .char-picker-label {
+      font-size: 14px;
+      color: #999;
+      margin-bottom: 8px;
+    }
+    .char-picker-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 48px);
+      gap: 6px;
+      margin-bottom: 12px;
+      justify-content: center;
+    }
+    .char-pick {
+      width: 48px;
+      height: 48px;
+      border: 2px solid #0f3460;
+      border-radius: 8px;
+      background: #0f1b38;
+      cursor: pointer;
+      padding: 2px;
+      transition: border-color 0.2s, background 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      image-rendering: pixelated;
+    }
+    .char-pick:hover { border-color: #f5a623; background: #1a2a4e; }
+    .char-pick.selected { border-color: #f5a623; background: #1a2a4e; }
+    .char-pick canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    /* Settings character button */
+    #settings-char-btn {
+      width: 32px;
+      height: 32px;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      background: #16213e;
+      cursor: pointer;
+      padding: 1px;
+      image-rendering: pixelated;
+      transition: border-color 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #settings-char-btn:hover { border-color: #f5a623; }
+    #settings-char-btn canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    /* Settings character picker dropdown */
+    #settings-char-picker {
+      position: absolute;
+      bottom: 100%;
+      right: 0;
+      margin-bottom: 4px;
+      background: rgba(22,33,62,0.95);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border: 1px solid #0f3460;
+      border-radius: 8px;
+      padding: 8px;
+      display: none;
+      z-index: 50;
+    }
+    #settings-char-picker.visible { display: block; }
+    #settings-char-picker .char-picker-grid {
+      margin-bottom: 0;
+    }
+
     /* Welcome popup */
     #welcome-popup {
       position: absolute;
@@ -951,6 +1030,8 @@
         <div class="welcome-greeting">&#x1F44B;</div>
         <div class="welcome-title">What would you like to be called?</div>
         <input id="welcome-name" type="text" placeholder="Your name..." maxlength="12" />
+        <div class="char-picker-label" id="char-picker-label">Choose your look</div>
+        <div class="char-picker-grid" id="welcome-char-grid"></div>
         <div class="welcome-hint">You can change it anytime in ⚙️</div>
         <button id="welcome-enter">Enter</button>
       </div>
@@ -1036,6 +1117,12 @@
     <div id="settings-panel">
       <span id="settings-icon">⚙️</span>
       <span id="settings-detail">
+        <div id="settings-char-wrap" style="position:relative;">
+          <button id="settings-char-btn" title="Change character"></button>
+          <div id="settings-char-picker">
+            <div class="char-picker-grid" id="settings-char-grid"></div>
+          </div>
+        </div>
         <input id="name-input" type="text" placeholder="Your name..." maxlength="12" />
         <div id="music-control">
           <button id="music-toggle">Sound: OFF</button>
@@ -1063,5 +1150,10 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/js/game.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
 </body>
 </html>

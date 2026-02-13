@@ -1,0 +1,15 @@
+{ "columns":12,
+ "image":"..\/assets\/moderninteriors-win\/3_Animated_objects\/16x16\/spritesheets\/animated_cat.png",
+ "imageheight":16,
+ "imagewidth":576,
+ "margin":0,
+ "name":"animated_cat",
+ "spacing":0,
+ "tilecount":12,
+ "tiledversion":"1.11.2",
+ "tileheight":16,
+ "tilewidth":48,
+ "transparentcolor":"#5e5e5e",
+ "type":"tileset",
+ "version":"1.10"
+}

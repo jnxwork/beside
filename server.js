@@ -2,6 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const path = require("path");
+const fs = require("fs");
 
 const app = express();
 const server = http.createServer(app);
@@ -14,15 +15,14 @@ const chatHistory = [];
 const MAX_CHAT_HISTORY = 50;
 const TILE = 32;
 
+// Defaults (overwritten after maps load by findPortalCenter)
 const PORTAL_SPAWN = {
-  focus: { x: 15 * TILE + TILE / 2, y: 14 * TILE + TILE / 2 },
-  rest:  { x: 12 * TILE + TILE / 2, y: 3 * TILE + TILE / 2 },
+  focus: { x: 15 * TILE + TILE / 2, y: 2 * TILE + TILE / 2 },   // below top portal
+  rest:  { x: 15 * TILE + TILE / 2, y: 14 * TILE + TILE / 2 },  // above bottom portal
 };
-
-// Portal positions in each room (where cat walks TO before switching)
 const PORTAL_POS = {
-  focus: { x: 15 * TILE + TILE / 2, y: 16 * TILE + TILE / 2 },  // bottom center
-  rest:  { x: 12 * TILE + TILE / 2, y: 1 * TILE + TILE / 2 },   // top center
+  focus: { x: 15 * TILE + TILE / 2, y: 0 * TILE + TILE / 2 },   // top of Focus
+  rest:  { x: 15 * TILE + TILE / 2, y: 16 * TILE + TILE / 2 },  // bottom of Lounge
 };
 
 // Furniture positions where cat can sit/sleep (in pixel coords)
@@ -65,6 +65,7 @@ const FURNITURE = {
   ],
 };
 
+const CHARACTER_NAMES = ["Adam", "Alex", "Amelia", "Ash", "Bob", "Bruce", "Dan", "Edward"];
 const GIFT_TYPES = ["fish", "leaf", "yarn"];
 
 const REACTION_COOLDOWN = 3000;
@@ -77,91 +78,78 @@ const MAX_GIFT_PILE = 10;
 
 // Walkable tile types (must match client)
 // 0=floor, 5=rug, 7=chair, 8=portal
-const COLS = 32;
-const ROWS = 18;
 
-function buildFocusMap() {
+function parseTiledMap(data) {
+  // Find collision layer (may be nested inside group layers)
+  let layer = null;
+  function findLayer(layers) {
+    for (const l of layers) {
+      if (l.name === "collision" && l.type === "tilelayer") { layer = l; return; }
+      if (l.type === "group" && l.layers) findLayer(l.layers);
+    }
+  }
+  findLayer(data.layers);
+  if (!layer) layer = data.layers[0];
+  const firstgid = data.tilesets[0].firstgid;
+  const cols = layer.width;
+  const rows = layer.height;
   const map = [];
-  for (let r = 0; r < ROWS; r++) {
+  for (let r = 0; r < rows; r++) {
     const row = [];
-    for (let c = 0; c < COLS; c++) {
-      if (r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1) row.push(1);
-      // Bookshelves along top wall (4 groups)
-      else if (r === 1 && c >= 2 && c <= 5) row.push(3);
-      else if (r === 1 && c >= 10 && c <= 13) row.push(3);
-      else if (r === 1 && c >= 18 && c <= 21) row.push(3);
-      else if (r === 1 && c >= 26 && c <= 29) row.push(3);
-      // Plants in corners and bottom
-      else if (r === 1 && (c === 1 || c === 30)) row.push(4);
-      else if (r === 14 && (c === 1 || c === 30)) row.push(4);
-      else if (r === 16 && (c === 1 || c === 30)) row.push(4);
-      // --- Top desk row (r=3,4) ---
-      else if ((r === 3 || r === 4) && c === 3) row.push(2);
-      else if ((r === 3 || r === 4) && c === 4) row.push(7);
-      else if ((r === 3 || r === 4) && (c === 8 || c === 9)) row.push(2);
-      else if ((r === 3 || r === 4) && c === 10) row.push(7);
-      else if (r === 3 && c >= 14 && c <= 17) row.push(2);
-      else if (r === 4 && c >= 14 && c <= 17) row.push(7);
-      else if ((r === 3 || r === 4) && (c === 21 || c === 22)) row.push(2);
-      else if ((r === 3 || r === 4) && c === 23) row.push(7);
-      else if ((r === 3 || r === 4) && c === 27) row.push(2);
-      else if ((r === 3 || r === 4) && c === 28) row.push(7);
-      // --- Bottom desk row (r=11,12) ---
-      else if ((r === 11 || r === 12) && c === 3) row.push(2);
-      else if ((r === 11 || r === 12) && c === 4) row.push(7);
-      else if ((r === 11 || r === 12) && (c === 8 || c === 9)) row.push(2);
-      else if ((r === 11 || r === 12) && c === 10) row.push(7);
-      else if (r === 11 && c >= 14 && c <= 17) row.push(2);
-      else if (r === 12 && c >= 14 && c <= 17) row.push(7);
-      else if ((r === 11 || r === 12) && (c === 21 || c === 22)) row.push(2);
-      else if ((r === 11 || r === 12) && c === 23) row.push(7);
-      else if ((r === 11 || r === 12) && c === 27) row.push(2);
-      else if ((r === 11 || r === 12) && c === 28) row.push(7);
-      // Center rug
-      else if (r >= 7 && r <= 8 && c >= 11 && c <= 20) row.push(5);
-      // Portal (bottom center)
-      else if (r === ROWS - 2 && c >= 14 && c <= 17) row.push(8);
-      else row.push(0);
+    for (let c = 0; c < cols; c++) {
+      const gid = layer.data[r * cols + c];
+      row.push(gid === 0 ? 0 : gid - firstgid);
     }
     map.push(row);
   }
-  return map;
+  return { map, cols, rows };
 }
 
-function buildRestMap() {
-  const map = [];
-  for (let r = 0; r < ROWS; r++) {
-    const row = [];
-    for (let c = 0; c < COLS; c++) {
-      if (r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1) row.push(1);
-      else if (r === 1 && c >= 2 && c <= 4) row.push(10);
-      else if (r === 1 && c >= 27 && c <= 29) row.push(3);
-      else if (r >= 4 && r <= 5 && c >= 2 && c <= 4) row.push(9);
-      else if (r >= 4 && r <= 5 && c >= 27 && c <= 29) row.push(9);
-      else if (r >= 6 && r <= 13 && c >= 8 && c <= 23) row.push(5);
-      else if (r >= 7 && r <= 8 && c >= 4 && c <= 5) row.push(9);
-      else if (r >= 11 && r <= 12 && c >= 4 && c <= 5) row.push(9);
-      else if (r >= 7 && r <= 8 && c >= 26 && c <= 27) row.push(9);
-      else if (r >= 11 && r <= 12 && c >= 26 && c <= 27) row.push(9);
-      else if (r === 9 && c === 12) row.push(2);
-      else if (r === 9 && c === 19) row.push(2);
-      else if ((r === 1 && c === 1) || (r === 1 && c === COLS - 2)) row.push(4);
-      else if ((r === ROWS - 2 && c === 1) || (r === ROWS - 2 && c === COLS - 2)) row.push(4);
-      else if (r === 1 && c === 16) row.push(4);
-      else if (r === 1 && c >= 11 && c <= 13) row.push(8);
-      else row.push(0);
+const MAPS_DIR = path.join(__dirname, "public", "maps");
+const focusParsed = parseTiledMap(JSON.parse(fs.readFileSync(path.join(MAPS_DIR, "focus.json"), "utf-8")));
+const restParsed  = parseTiledMap(JSON.parse(fs.readFileSync(path.join(MAPS_DIR, "rest.json"), "utf-8")));
+const SERVER_MAPS = { focus: focusParsed.map, rest: restParsed.map };
+const ROOM_DIMS = {
+  focus: { cols: focusParsed.cols, rows: focusParsed.rows },
+  rest:  { cols: restParsed.cols,  rows: restParsed.rows },
+};
+
+// Auto-detect portal tile positions from collision data
+function findPortalCenter(room) {
+  const map = SERVER_MAPS[room];
+  const dims = ROOM_DIMS[room];
+  let sumX = 0, sumY = 0, count = 0;
+  for (let r = 0; r < dims.rows; r++) {
+    for (let c = 0; c < dims.cols; c++) {
+      if (map[r][c] === 8) {
+        sumX += c * TILE + TILE / 2;
+        sumY += r * TILE + TILE / 2;
+        count++;
+      }
     }
-    map.push(row);
   }
-  return map;
+  return count > 0 ? { x: sumX / count, y: sumY / count } : null;
+}
+const focusPortal = findPortalCenter("focus");
+const restPortal = findPortalCenter("rest");
+if (focusPortal) {
+  PORTAL_POS.focus = focusPortal;
+  // Portal at top of Focus: spawn below it (inside room)
+  const focusMidY = ROOM_DIMS.focus.rows * TILE / 2;
+  PORTAL_SPAWN.focus = { x: focusPortal.x, y: focusPortal.y + (focusPortal.y < focusMidY ? 2 : -2) * TILE };
+}
+if (restPortal) {
+  PORTAL_POS.rest = restPortal;
+  // Portal at bottom of Lounge: spawn above it (inside room)
+  const restMidY = ROOM_DIMS.rest.rows * TILE / 2;
+  PORTAL_SPAWN.rest = { x: restPortal.x, y: restPortal.y + (restPortal.y < restMidY ? 2 : -2) * TILE };
 }
 
-const SERVER_MAPS = { focus: buildFocusMap(), rest: buildRestMap() };
-
-function isWalkableTile(t) { return t === 0 || t === 5 || t === 7 || t === 8; }
+function isWalkableTile(t) { return t === 0 || t === 5 || t === 7 || t === 8 || t === 12; }
 
 function isSpawnSafe(x, y, room) {
   const map = SERVER_MAPS[room];
+  const dims = ROOM_DIMS[room];
   const half = 10;
   const points = [
     { x: x - half, y: y - half },
@@ -172,22 +160,23 @@ function isSpawnSafe(x, y, room) {
   for (const p of points) {
     const col = Math.floor(p.x / TILE);
     const row = Math.floor(p.y / TILE);
-    if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return false;
+    if (row < 0 || row >= dims.rows || col < 0 || col >= dims.cols) return false;
     if (!isWalkableTile(map[row][col])) return false;
   }
   return true;
 }
 
 function getInitialSpawn() {
-  const cx = 16 * TILE; // center of 32-col map
-  const cy = 9 * TILE;
+  // Spawn at bottom entrance of Focus Zone
+  const dims = ROOM_DIMS.focus;
+  const cx = Math.floor(dims.cols / 2) * TILE;
+  const cy = (dims.rows - 2) * TILE + TILE / 2;
   for (let i = 0; i < 50; i++) {
-    const x = cx - 80 + Math.floor(Math.random() * 160);
-    const y = cy - 40 + Math.floor(Math.random() * 80);
+    const x = cx - 48 + Math.floor(Math.random() * 96);
+    const y = cy - 16 + Math.floor(Math.random() * 32);
     if (isSpawnSafe(x, y, "focus")) return { x, y };
   }
-  // Fallback: center of rug area (guaranteed safe)
-  return { x: 15 * TILE + TILE / 2, y: 8 * TILE + TILE / 2 };
+  return { x: cx, y: cy };
 }
 
 function getPortalSpawn(room) {
@@ -327,9 +316,11 @@ function updateCat() {
           cat.targetY = p.y + (Math.random() > 0.5 ? 25 : -25);
           cat.stateTimer = 120;
         } else {
+          const dims = ROOM_DIMS[cat.room];
+          const maxY = cat.room === "focus" ? Math.min((dims.rows - 4) * TILE, dims.rows * TILE - 160) : dims.rows * TILE - 80;
           cat.state = "wander";
-          cat.targetX = 80 + Math.random() * 640;
-          cat.targetY = 80 + Math.random() * 400;
+          cat.targetX = 80 + Math.random() * (dims.cols * TILE - 160);
+          cat.targetY = 80 + Math.random() * (maxY - 80);
           cat.stateTimer = 100;
         }
       }
@@ -475,10 +466,12 @@ function updateCat() {
       cat.targetY = target.y + (Math.random() > 0.5 ? 20 : -20);
       cat.stateTimer = 180;
     } else if (r < 0.2 + lively) {
-      // Wander to random spot
+      // Wander to random spot (within main area, exclude entrance)
+      const dims = ROOM_DIMS[cat.room];
+      const maxY = cat.room === "focus" ? Math.min((dims.rows - 4) * TILE, dims.rows * TILE - 160) : dims.rows * TILE - 80;
       cat.state = "wander";
-      cat.targetX = 80 + Math.random() * 640;
-      cat.targetY = 80 + Math.random() * 400;
+      cat.targetX = 80 + Math.random() * (dims.cols * TILE - 160);
+      cat.targetY = 80 + Math.random() * (maxY - 80);
       cat.stateTimer = 150 + Math.floor(Math.random() * 150);
     } else if (r < 0.35 + lively) {
       // Walk near a player
@@ -580,11 +573,13 @@ io.on("connection", (socket) => {
     lastMoveTime: Date.now(),
     giftPile: [],
     idlePileCount: 0,
+    character: null,
     connectedAt: Date.now(),
   };
 
   socket.join("focus");
   socket.emit("currentPlayers", players);
+  socket.emit("roomDimensions", ROOM_DIMS);
   socket.emit("chatHistory", chatHistory);
   socket.emit("catUpdate", {
     x: Math.round(cat.x),
@@ -750,6 +745,13 @@ io.on("connection", (socket) => {
   socket.on("setName", (name) => {
     if (!players[socket.id]) return;
     players[socket.id].name = name.slice(0, 12);
+    io.emit("playerUpdated", players[socket.id]);
+  });
+
+  socket.on("setCharacter", (character) => {
+    if (!players[socket.id]) return;
+    if (!CHARACTER_NAMES.includes(character)) return;
+    players[socket.id].character = character;
     io.emit("playerUpdated", players[socket.id]);
   });
 

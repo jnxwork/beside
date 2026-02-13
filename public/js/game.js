@@ -12,8 +12,18 @@ const socket = io();
 // TOUCH / RESPONSIVE + CAMERA
 // ============================================================
 const isTouchDevice = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
-const GAME_W = 1024;
-const GAME_H = 576;
+const TILE = 32;
+
+// Per-room dimensions (defaults, overwritten by server/Tiled data)
+const ROOM_DIMS = {
+  focus: { cols: 32, rows: 18 },
+  rest:  { cols: 32, rows: 18 },
+};
+function _roomDims() { try { return ROOM_DIMS[currentRoom] || ROOM_DIMS.focus; } catch(e) { return ROOM_DIMS.focus; } }
+function getCols() { return _roomDims().cols; }
+function getRows() { return _roomDims().rows; }
+function getGameW() { return _roomDims().cols * TILE; }
+function getGameH() { return _roomDims().rows * TILE; }
 
 // Camera state
 let gameScale = 1;
@@ -30,24 +40,30 @@ function resizeCanvas() {
   canvas.style.width = w + "px";
   canvas.style.height = h + "px";
   // Scale so the game world always covers the viewport (fill, not fit)
-  gameScale = Math.max(w / GAME_W, h / GAME_H);
+  gameScale = Math.max(w / getGameW(), h / getGameH());
 }
 
 function updateCamera() {
   if (!localPlayer) return;
-  const viewW = (canvas.width / dpr) / gameScale;
-  const viewH = (canvas.height / dpr) / gameScale;
-  if (viewW >= GAME_W) {
-    cameraX = (GAME_W - viewW) / 2; // center
+  const gw = getGameW();
+  const gh = getGameH();
+  // Recalculate scale for current room dimensions
+  const w = canvas.width / dpr;
+  const h = canvas.height / dpr;
+  gameScale = Math.max(w / gw, h / gh);
+  const viewW = w / gameScale;
+  const viewH = h / gameScale;
+  if (viewW >= gw) {
+    cameraX = (gw - viewW) / 2; // center
   } else {
     const tx = localPlayer.x - viewW / 2;
-    cameraX = Math.max(0, Math.min(GAME_W - viewW, tx));
+    cameraX = Math.max(0, Math.min(gw - viewW, tx));
   }
-  if (viewH >= GAME_H) {
-    cameraY = (GAME_H - viewH) / 2; // center
+  if (viewH >= gh) {
+    cameraY = (gh - viewH) / 2; // center
   } else {
     const ty = localPlayer.y - viewH / 2;
-    cameraY = Math.max(0, Math.min(GAME_H - viewH, ty));
+    cameraY = Math.max(0, Math.min(gh - viewH, ty));
   }
 }
 
@@ -116,6 +132,7 @@ const TRANSLATIONS = {
     wandering: "Wandering",
     daydreaming: "Daydreaming",
     grabCoffee: "Going to grab some coffee...",
+    checkingIn: "Checking in...",
     joinedLounge: "joined the Lounge",
     leftLounge: "left",
     welcomeTitle: "What would you like to be called?",
@@ -134,6 +151,7 @@ const TRANSLATIONS = {
     reacted: "sent you",
     reactedTo: "You sent",
     reactedToSuffix: "",
+    chooseCharacter: "Choose your look",
   },
   zh: {
     focusZone: "\u4E13\u6CE8\u533A",
@@ -180,6 +198,7 @@ const TRANSLATIONS = {
     wandering: "\u95F2\u901B\u4E2D",
     daydreaming: "\u53D1\u5446\u4E2D",
     grabCoffee: "\u53BB\u559D\u676F\u5496\u5561...",
+    checkingIn: "\u7B7E\u5230\u4E2D...",
     joinedLounge: "\u52A0\u5165\u4E86\u4F11\u95F2\u533A",
     leftLounge: "\u79BB\u5F00\u4E86",
     welcomeTitle: "\u4F60\u60F3\u88AB\u600E\u4E48\u79F0\u547C\uFF1F",
@@ -198,6 +217,7 @@ const TRANSLATIONS = {
     reacted: "\u5BF9\u4F60\u53D1\u9001\u4E86",
     reactedTo: "\u4F60\u5BF9",
     reactedToSuffix: "\u53D1\u9001\u4E86",
+    chooseCharacter: "\u9009\u62E9\u89D2\u8272",
   },
 };
 
@@ -255,6 +275,8 @@ function applyLanguage() {
   if (we) we.textContent = t("welcomeEnter");
   const wn = document.getElementById("welcome-name");
   if (wn) wn.placeholder = t("namePlaceholder");
+  const cpl = document.getElementById("char-picker-label");
+  if (cpl) cpl.textContent = t("chooseCharacter");
 
   // Chat toggle
   const chatPanel = document.getElementById("chat-panel");
@@ -279,21 +301,293 @@ function applyLanguage() {
 }
 
 // --- Constants ---
-const TILE = 32;
-const COLS = 32;
-const ROWS = 18;
 const PLAYER_SIZE = 24;
 const SPEED = 2;
 const PORTAL_TILE = 8; // New tile type for portals
+
+// --- Sprite images & tileset registry ---
+const spriteImages = {};
+function loadSpriteImage(name, src) {
+  const img = new Image();
+  img.onload = () => { img._loaded = true; };
+  img.src = src;
+  spriteImages[name] = img;
+  return img;
+}
+loadSpriteImage("room_builder_office", "/assets/modern_office/1_Room_Builder_Office/Room_Builder_Office_32x32.png");
+loadSpriteImage("modern_office", "/assets/modern_office/Modern_Office_32x32.png");
+loadSpriteImage("mi_room_builder", "/assets/moderninteriors-win/1_Interiors/32x32/Room_Builder_32x32.png");
+loadSpriteImage("mi_interiors", "/assets/moderninteriors-win/1_Interiors/32x32/Interiors_32x32.png");
+const doorSlidingImg = loadSpriteImage("door_sliding", "/assets/moderninteriors-win/3_Animated_objects/32x32/spritesheets/animated_door_glass_sliding_32x32.png");
+loadSpriteImage("animated_cat", "/assets/moderninteriors-win/3_Animated_objects/16x16/spritesheets/animated_cat.png");
+loadSpriteImage("animated_coffee", "/assets/moderninteriors-win/3_Animated_objects/32x32/spritesheets/animated_coffee_32x32.png");
+
+// Animated object tileset metadata (keyed by .tsj filename without extension)
+const OBJECT_TILESETS = {
+  banli:  { imgKey: "animated_cat",    tileW: 48, tileH: 16, columns: 12, frameCount: 12 },
+  coffee: { imgKey: "animated_coffee", tileW: 32, tileH: 32, columns: 6,  frameCount: 12 },
+};
+
+// --- Character sprite sheets ---
+const CHARACTER_NAMES = ["Adam", "Alex", "Amelia", "Ash", "Bob", "Bruce", "Dan", "Edward"];
+const CHAR_SPRITE_BASE = "/assets/moderninteriors-win/2_Characters/Old/Single_Characters_Legacy/32x32/";
+for (const cname of CHARACTER_NAMES) {
+  loadSpriteImage(`char_${cname}_idle`, CHAR_SPRITE_BASE + `${cname}_idle_anim_32x32.png`);
+  loadSpriteImage(`char_${cname}_run`,  CHAR_SPRITE_BASE + `${cname}_run_32x32.png`);
+}
+
+// --- Character picker ---
+let selectedCharacter = localStorage.getItem("playerCharacter") || CHARACTER_NAMES[0];
+
+function drawCharPreview(canvas, charName) {
+  canvas.width = 32;
+  canvas.height = 64;
+  const c = canvas.getContext("2d");
+  c.imageSmoothingEnabled = false;
+  const sheet = spriteImages[`char_${charName}_idle`];
+  if (sheet && sheet._loaded) {
+    // idle-down frame 0: col 18 (SPRITE_DIR_OFFSET.down=18), row 0, 32×64
+    c.drawImage(sheet, 18 * 32, 0, 32, 64, 0, 0, 32, 64);
+  } else {
+    // Retry once sprite loads
+    const img = spriteImages[`char_${charName}_idle`];
+    if (img) img.onload = () => {
+      img._loaded = true;
+      c.drawImage(img, 18 * 32, 0, 32, 64, 0, 0, 32, 64);
+    };
+  }
+}
+
+function buildCharPicker(containerId, onSelect) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = "";
+  CHARACTER_NAMES.forEach(name => {
+    const cell = document.createElement("div");
+    cell.className = "char-pick" + (name === selectedCharacter ? " selected" : "");
+    cell.dataset.char = name;
+    const cvs = document.createElement("canvas");
+    cvs.style.width = "32px";
+    cvs.style.height = "48px";
+    cvs.style.objectFit = "contain";
+    cell.appendChild(cvs);
+    container.appendChild(cell);
+    drawCharPreview(cvs, name);
+    cell.addEventListener("click", () => {
+      container.querySelectorAll(".char-pick").forEach(c => c.classList.remove("selected"));
+      cell.classList.add("selected");
+      onSelect(name);
+    });
+  });
+}
+
+function updateSettingsCharBtn() {
+  const btn = document.getElementById("settings-char-btn");
+  if (!btn) return;
+  let cvs = btn.querySelector("canvas");
+  if (!cvs) {
+    cvs = document.createElement("canvas");
+    cvs.style.width = "24px";
+    cvs.style.height = "28px";
+    cvs.style.objectFit = "contain";
+    btn.appendChild(cvs);
+  }
+  drawCharPreview(cvs, selectedCharacter);
+}
+
+// Init pickers once sprites are likely loaded
+setTimeout(() => {
+  function onCharSelect(name) {
+    selectedCharacter = name;
+    localStorage.setItem("playerCharacter", name);
+    if (localPlayer) {
+      localPlayer.character = name;
+      socket.emit("setCharacter", name);
+    }
+    // Sync both pickers
+    document.querySelectorAll(".char-picker-grid").forEach(grid => {
+      grid.querySelectorAll(".char-pick").forEach(c => {
+        c.classList.toggle("selected", c.dataset.char === name);
+      });
+    });
+    updateSettingsCharBtn();
+  }
+  buildCharPicker("welcome-char-grid", onCharSelect);
+  buildCharPicker("settings-char-grid", (name) => {
+    onCharSelect(name);
+    // Close settings picker after selection
+    const picker = document.getElementById("settings-char-picker");
+    if (picker) picker.classList.remove("visible");
+  });
+  updateSettingsCharBtn();
+}, 500);
+
+// Settings character button toggle
+document.getElementById("settings-char-btn")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const picker = document.getElementById("settings-char-picker");
+  if (picker) picker.classList.toggle("visible");
+});
+// Close settings char picker when clicking outside
+document.addEventListener("click", (e) => {
+  const picker = document.getElementById("settings-char-picker");
+  const wrap = document.getElementById("settings-char-wrap");
+  if (picker && wrap && !wrap.contains(e.target)) {
+    picker.classList.remove("visible");
+  }
+});
+
+// Known tileset metadata (columns needed to compute source rect from GID)
+const TILESET_INFO = {
+  tileset_game:          { columns: 13, imgKey: null },
+  room_builder_office:   { columns: 16, imgKey: "room_builder_office" },
+  modern_office:         { columns: 16, imgKey: "modern_office" },
+  mi_room_builder:       { columns: 76, imgKey: "mi_room_builder" },
+  mi_interiors:          { columns: 16, imgKey: "mi_interiors" },
+};
+
+// Populated from Tiled JSON tilesets array
+let tilesetRegistry = []; // [{firstgid, img, columns}, ...]
+
+function drawTileByGID(gid, x, y) {
+  if (gid === 0) return false;
+  for (let i = tilesetRegistry.length - 1; i >= 0; i--) {
+    const ts = tilesetRegistry[i];
+    if (gid >= ts.firstgid) {
+      if (!ts.img || !ts.img._loaded) return false;
+      const localId = gid - ts.firstgid;
+      const sx = (localId % ts.columns) * 32;
+      const sy = Math.floor(localId / ts.columns) * 32;
+      ctx.drawImage(ts.img, sx, sy, 32, 32, x, y, TILE + 1, TILE + 1);
+      return true;
+    }
+  }
+  return false;
+}
 
 // --- Current room ---
 let currentRoom = "focus";
 
 // ============================================================
+// ANIMATED DOOR SYSTEM
+// ============================================================
+const DOOR_FRAME_W = 64;   // sprite frame width (2 tiles)
+const DOOR_FRAME_H = 64;   // sprite frame height (2 tiles)
+const DOOR_OPEN_FRAMES = 7; // frames 0-6 = opening sequence
+const DOOR_FRAME_MS = 80;   // ms per animation frame
+const DOOR_TRIGGER_DIST = 3 * TILE; // proximity trigger distance
+
+// Door objects per room: { room: [{ x, y, tileX, tileY, state, frame, lastTime }, ...] }
+const roomDoors = { focus: [], rest: [] };
+
+function findDoorsInCollision(collision, cols, rows) {
+  const doors = [];
+  const visited = new Set();
+  for (let r = 0; r < rows - 1; r++) {
+    for (let c = 0; c < cols - 1; c++) {
+      if (collision[r][c] === 12 && !visited.has(r + "," + c)) {
+        // Each door occupies 2×2 tiles - group from top-left
+        for (let dr = 0; dr < 2; dr++)
+          for (let dc = 0; dc < 2; dc++)
+            visited.add((r + dr) + "," + (c + dc));
+        doors.push({
+          tileX: c, tileY: r,
+          x: c * TILE, y: r * TILE,
+          state: "closed", // closed | opening | open | closing
+          frame: 0,
+          lastTime: 0,
+        });
+        c++; // skip next col (already part of this door)
+      }
+    }
+  }
+  return doors;
+}
+
+function isAnyPlayerNearDoor(door) {
+  const cx = door.x + DOOR_FRAME_W / 2;
+  const cy = door.y + DOOR_FRAME_H / 2;
+  // Check local player
+  if (localPlayer) {
+    const dx = localPlayer.x - cx, dy = localPlayer.y - cy;
+    if (Math.sqrt(dx * dx + dy * dy) < DOOR_TRIGGER_DIST) return true;
+  }
+  // Check remote players
+  for (const id in players) {
+    const p = players[id];
+    if (p.room !== currentRoom) continue;
+    const dx = p.x - cx, dy = p.y - cy;
+    if (Math.sqrt(dx * dx + dy * dy) < DOOR_TRIGGER_DIST) return true;
+  }
+  return false;
+}
+
+function updateDoors() {
+  const doors = roomDoors[currentRoom];
+  if (!doors || !doors.length) return;
+  const now = Date.now();
+
+  // All doors in the room share the same open/close state (linked doors)
+  const anyNear = doors.some(d => isAnyPlayerNearDoor(d));
+
+  for (const door of doors) {
+    if (anyNear && (door.state === "closed" || door.state === "closing")) {
+      door.state = "opening";
+      if (door.frame >= DOOR_OPEN_FRAMES - 1) door.frame = 0;
+      door.lastTime = now;
+    } else if (!anyNear && (door.state === "open" || door.state === "opening")) {
+      door.state = "closing";
+      if (door.frame <= 0) door.frame = DOOR_OPEN_FRAMES - 1;
+      door.lastTime = now;
+    }
+
+    if (door.state === "opening") {
+      if (now - door.lastTime >= DOOR_FRAME_MS) {
+        door.frame++;
+        door.lastTime = now;
+        if (door.frame >= DOOR_OPEN_FRAMES - 1) {
+          door.frame = DOOR_OPEN_FRAMES - 1;
+          door.state = "open";
+        }
+      }
+    } else if (door.state === "closing") {
+      if (now - door.lastTime >= DOOR_FRAME_MS) {
+        door.frame--;
+        door.lastTime = now;
+        if (door.frame <= 0) {
+          door.frame = 0;
+          door.state = "closed";
+        }
+      }
+    }
+  }
+}
+
+function isDoorOpenAt(col, row) {
+  const doors = roomDoors[currentRoom];
+  if (!doors) return false;
+  for (const d of doors) {
+    if (col >= d.tileX && col < d.tileX + 2 && row >= d.tileY && row < d.tileY + 2) {
+      return d.state === "open" || (d.state === "opening" && d.frame >= 3);
+    }
+  }
+  return false;
+}
+
+function isDoorTile(col, row) {
+  const doors = roomDoors[currentRoom];
+  if (!doors) return false;
+  for (const d of doors) {
+    if (col >= d.tileX && col < d.tileX + 2 && row >= d.tileY && row < d.tileY + 2) return true;
+  }
+  return false;
+}
+
+// ============================================================
 // ROOM MAPS
 // ============================================================
 // 0=floor, 1=wall, 2=desk, 3=bookshelf, 4=plant, 5=rug,
-// 6=(unused), 7=chair, 8=portal, 9=sofa, 10=coffee_machine
+// 6=(unused), 7=chair, 8=portal, 9=sofa, 10=coffee_machine, 12=door
 
 // --- Focus Room Colors ---
 const FOCUS_COLORS = {
@@ -338,7 +632,47 @@ const REST_COLORS = {
   portalGlow: "#80b8e0",
 };
 
+// --- Time-of-Day Visual Config ---
+let cachedTimeKey = "daytime";
+const TIME_VISUALS = {
+  morning: {
+    windowGlass: "#ffe8a0",
+    windowGlow: "rgba(255,230,160,0.12)",
+    overlayColor: "rgba(255,200,100,0.04)",
+    vignetteAlpha: 0.08,
+    skyColors: ["#ffd080", "#87ceeb"],
+    starCount: 0,
+  },
+  daytime: {
+    windowGlass: "#a8e0ff",
+    windowGlow: "rgba(180,220,255,0.08)",
+    overlayColor: null,
+    vignetteAlpha: 0.1,
+    skyColors: ["#87ceeb", "#b0d8f0"],
+    starCount: 0,
+  },
+  dusk: {
+    windowGlass: "#f0a050",
+    windowGlow: "rgba(240,160,80,0.15)",
+    overlayColor: "rgba(180,100,50,0.06)",
+    vignetteAlpha: 0.15,
+    skyColors: ["#e87040", "#d4a060", "#6080b0"],
+    starCount: 0,
+  },
+  night: {
+    windowGlass: "#304870",
+    windowGlow: "rgba(80,120,180,0.06)",
+    overlayColor: "rgba(20,30,60,0.12)",
+    vignetteAlpha: 0.25,
+    skyColors: ["#1a1a3a", "#252550"],
+    starCount: 5,
+  },
+};
+
+// (ROOM_TILES removed - sprite coords now come from Tiled GIDs)
+
 function buildFocusMap() {
+  const COLS = 32, ROWS = 18; // fallback hardcoded defaults
   const map = [];
   for (let r = 0; r < ROWS; r++) {
     const row = [];
@@ -389,8 +723,8 @@ function buildFocusMap() {
       else if ((r === 11 || r === 12) && c === 28) row.push(7);
       // Center rug
       else if (r >= 7 && r <= 8 && c >= 11 && c <= 20) row.push(5);
-      // Portal to rest zone (bottom center)
-      else if (r === ROWS - 2 && c >= 14 && c <= 17) row.push(8);
+      // Portal to rest zone (top center)
+      else if (r <= 1 && c >= 15 && c <= 16) row.push(8);
       else row.push(0);
     }
     map.push(row);
@@ -399,6 +733,7 @@ function buildFocusMap() {
 }
 
 function buildRestMap() {
+  const COLS = 32, ROWS = 18; // fallback hardcoded defaults
   const map = [];
   for (let r = 0; r < ROWS; r++) {
     const row = [];
@@ -428,8 +763,8 @@ function buildRestMap() {
       else if ((r === 1 && c === 1) || (r === 1 && c === COLS - 2)) row.push(4);
       else if ((r === ROWS - 2 && c === 1) || (r === ROWS - 2 && c === COLS - 2)) row.push(4);
       else if (r === 1 && c === 16) row.push(4);
-      // Portal back to focus zone (top center)
-      else if (r === 1 && c >= 11 && c <= 13) row.push(8);
+      // Portal back to focus zone (bottom center)
+      else if (r === ROWS - 2 && c >= 14 && c <= 17) row.push(8);
       else row.push(0);
     }
     map.push(row);
@@ -437,17 +772,144 @@ function buildRestMap() {
   return map;
 }
 
-const ROOM_MAPS = {
-  focus: buildFocusMap(),
-  rest: buildRestMap(),
+// Room data: collision (2D array of types), floorGIDs (flat array), objectLayers (array of flat arrays)
+const ROOM_DATA = {
+  focus: { collision: buildFocusMap(), floorGIDs: null, wallGIDs: null, objectLayers: [], aboveLayers: [], mapObjects: [] },
+  rest:  { collision: buildRestMap(),  floorGIDs: null, wallGIDs: null, objectLayers: [], aboveLayers: [], mapObjects: [] },
 };
 
+// Parse 3-layer Tiled JSON into room data
+function parseTiledMapLayers(data) {
+  const result = {};
+  // Find collision firstgid (tileset_game is always first)
+  const gameFirstgid = data.tilesets[0].firstgid;
+
+  // Flatten layers (handle group layers that nest tilelayers)
+  function visitLayers(layers) {
+    for (const layer of layers) {
+      if (layer.type === "group" && layer.layers) {
+        visitLayers(layer.layers);
+        continue;
+      }
+      if (layer.name === "collision" && layer.data) {
+        const map = [];
+        for (let r = 0; r < layer.height; r++) {
+          const row = [];
+          for (let c = 0; c < layer.width; c++) {
+            const gid = layer.data[r * layer.width + c];
+            row.push(gid === 0 ? 0 : gid - gameFirstgid);
+          }
+          map.push(row);
+        }
+        result.collision = map;
+        result.cols = layer.width;
+        result.rows = layer.height;
+      } else if (layer.name === "floor" && layer.data) {
+        result.floorGIDs = layer.data;
+        result.floorCols = layer.width;
+      } else if (layer.name === "wall" && layer.data) {
+        result.wallGIDs = layer.data;
+        result.wallCols = layer.width;
+      } else if (layer.type === "tilelayer" && layer.data &&
+                 layer.name !== "collision" && layer.name !== "floor" && layer.name !== "wall") {
+        // "above*" layers render on top of players; everything else ("below*", "objects*") renders below
+        const n = layer.name.toLowerCase();
+        if (n === "above" || n.startsWith("above")) {
+          if (!result.aboveLayers) result.aboveLayers = [];
+          result.aboveLayers.push(layer.data);
+        } else {
+          if (!result.objectLayers) result.objectLayers = [];
+          result.objectLayers.push(layer.data);
+        }
+      } else if (layer.type === "objectgroup" && layer.objects) {
+        for (const obj of layer.objects) {
+          if (!obj.gid) continue; // only tile objects
+          const props = {};
+          if (obj.properties) {
+            for (const p of obj.properties) props[p.name] = p.value;
+          }
+          if (!result.mapObjects) result.mapObjects = [];
+          result.mapObjects.push({
+            x: obj.x,
+            y: obj.y - obj.height, // Tiled tile objects have y at bottom
+            width: obj.width,
+            height: obj.height,
+            gid: obj.gid,
+            type: obj.type || "",
+            name: props.name || obj.name || "",
+            allowedPlayer: props.allowedPlayer || "",
+          });
+        }
+      }
+    }
+  }
+  visitLayers(data.layers);
+
+  // Build tileset registry (once, from first loaded map)
+  if (!tilesetRegistry.length && data.tilesets) {
+    tilesetRegistry = data.tilesets.map(ts => {
+      const name = ts.source ? ts.source.replace(".tsj", "").replace(/.tsx$/, "").replace(/^:\//, "") : "";
+      const info = TILESET_INFO[name] || {};
+      const objInfo = OBJECT_TILESETS[name];
+      return {
+        firstgid: ts.firstgid,
+        name,
+        img: (objInfo ? spriteImages[objInfo.imgKey] : null) || (info.imgKey ? spriteImages[info.imgKey] : null),
+        columns: (objInfo ? objInfo.columns : null) || info.columns || 1,
+        tileW: objInfo ? objInfo.tileW : 32,
+        tileH: objInfo ? objInfo.tileH : 32,
+        frameCount: objInfo ? objInfo.frameCount : 0,
+      };
+    }).sort((a, b) => a.firstgid - b.firstgid);
+  }
+
+  return result;
+}
+
+(async function loadTiledMaps() {
+  try {
+    const [focusRes, restRes] = await Promise.all([
+      fetch("/maps/focus.json"),
+      fetch("/maps/rest.json"),
+    ]);
+    if (focusRes.ok && restRes.ok) {
+      const focusParsed = parseTiledMapLayers(await focusRes.json());
+      const restParsed  = parseTiledMapLayers(await restRes.json());
+      if (focusParsed.collision) ROOM_DATA.focus.collision = focusParsed.collision;
+      ROOM_DATA.focus.floorGIDs    = focusParsed.floorGIDs;
+      ROOM_DATA.focus.floorCols    = focusParsed.floorCols || focusParsed.cols;
+      ROOM_DATA.focus.wallGIDs     = focusParsed.wallGIDs;
+      ROOM_DATA.focus.wallCols     = focusParsed.wallCols || focusParsed.cols;
+      ROOM_DATA.focus.objectLayers = focusParsed.objectLayers || [];
+      ROOM_DATA.focus.aboveLayers  = focusParsed.aboveLayers || [];
+      ROOM_DATA.focus.mapObjects   = focusParsed.mapObjects || [];
+      if (focusParsed.cols) ROOM_DIMS.focus = { cols: focusParsed.cols, rows: focusParsed.rows };
+      if (restParsed.collision)  ROOM_DATA.rest.collision = restParsed.collision;
+      ROOM_DATA.rest.floorGIDs    = restParsed.floorGIDs;
+      ROOM_DATA.rest.floorCols    = restParsed.floorCols || restParsed.cols;
+      ROOM_DATA.rest.wallGIDs     = restParsed.wallGIDs;
+      ROOM_DATA.rest.wallCols     = restParsed.wallCols || restParsed.cols;
+      ROOM_DATA.rest.objectLayers = restParsed.objectLayers || [];
+      ROOM_DATA.rest.aboveLayers  = restParsed.aboveLayers || [];
+      ROOM_DATA.rest.mapObjects   = restParsed.mapObjects || [];
+      if (restParsed.cols) ROOM_DIMS.rest = { cols: restParsed.cols, rows: restParsed.rows };
+      // Detect door tiles from collision layers
+      if (focusParsed.collision) roomDoors.focus = findDoorsInCollision(focusParsed.collision, focusParsed.cols, focusParsed.rows);
+      if (restParsed.collision) roomDoors.rest = findDoorsInCollision(restParsed.collision, restParsed.cols, restParsed.rows);
+      console.log("[Maps] Loaded Tiled maps. Focus:", ROOM_DIMS.focus, "Rest:", ROOM_DIMS.rest, "Doors:", roomDoors);
+    }
+  } catch (e) {
+    console.warn("[Maps] Using fallback builders:", e);
+  }
+})();
+
 function getCurrentMap() {
-  return ROOM_MAPS[currentRoom];
+  return ROOM_DATA[currentRoom].collision;
 }
 
 // --- Tile walkability ---
-function isWalkable(tileType) {
+function isWalkable(tileType, col, row) {
+  if (tileType === 12) return isDoorOpenAt(col, row);
   return tileType === 0 || tileType === 5 || tileType === 7 || tileType === 8;
 }
 
@@ -463,8 +925,8 @@ function canMoveTo(x, y) {
   for (const p of points) {
     const col = Math.floor(p.x / TILE);
     const row = Math.floor(p.y / TILE);
-    if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return false;
-    if (!isWalkable(map[row][col])) return false;
+    if (row < 0 || row >= getRows() || col < 0 || col >= getCols()) return false;
+    if (!isWalkable(map[row][col], col, row)) return false;
   }
   return true;
 }
@@ -473,7 +935,7 @@ function isOnPortal(x, y) {
   const map = getCurrentMap();
   const col = Math.floor(x / TILE);
   const row = Math.floor(y / TILE);
-  if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return false;
+  if (row < 0 || row >= getRows() || col < 0 || col >= getCols()) return false;
   return map[row][col] === 8;
 }
 
@@ -482,161 +944,372 @@ function isOnPortal(x, y) {
 // ============================================================
 
 function drawRoom() {
-  const map = getCurrentMap();
+  const rd = ROOM_DATA[currentRoom];
+  const collision = rd.collision;
   const colors = currentRoom === "focus" ? FOCUS_COLORS : REST_COLORS;
+  const hasSprites = tilesetRegistry.length > 0;
 
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  const curCols = getCols();
+  const curRows = getRows();
+  for (let r = 0; r < curRows; r++) {
+    for (let c = 0; c < curCols; c++) {
       const x = c * TILE;
       const y = r * TILE;
-      const tile = map[r][c];
+      const idx = r * curCols + c;
+      const ct = collision[r][c]; // collision type
 
-      // Floor base
-      ctx.fillStyle = colors.floor;
-      ctx.fillRect(x, y, TILE, TILE);
+      // Skip all per-tile rendering for door positions (door sprite drawn in separate pass)
+      const onDoor = isDoorTile(c, r);
 
-      // Floor stone texture (walkable tiles only)
-      if (tile === 0 || tile === 7 || tile === 8) {
-        const hash = (r * 31 + c * 17) % 8;
-        if (hash < 3) {
-          ctx.fillStyle = colors.floorDark;
-          ctx.fillRect(x, y, TILE, TILE);
+      // --- 1. Floor layer ---
+      let floorDrawn = false;
+      if (!onDoor) {
+        if (hasSprites && rd.floorGIDs) {
+          floorDrawn = drawTileByGID(rd.floorGIDs[idx], x, y);
         }
-        // Stone tile joints
-        ctx.fillStyle = "rgba(0,0,0,0.07)";
-        ctx.fillRect(x, y, TILE, 1);
-        ctx.fillRect(x, y, 1, TILE);
-      }
-
-      switch (tile) {
-        case 1: // Wall - stone brick pattern
-          ctx.fillStyle = colors.wall;
-          ctx.fillRect(x, y, TILE, TILE);
-          // Brick mortar lines
-          ctx.fillStyle = colors.wallDark;
-          ctx.fillRect(x, y + 15, TILE, 1);
-          if ((r + c) % 2 === 0) {
-            ctx.fillRect(x + 14, y, 1, 15);
-          } else {
-            ctx.fillRect(x + 14, y + 16, 1, 16);
-          }
-          // Top highlight
-          ctx.fillStyle = colors.wallTop;
-          ctx.fillRect(x, y, TILE, 2);
-          // Bottom shadow
-          ctx.fillStyle = "rgba(0,0,0,0.12)";
-          ctx.fillRect(x, y + TILE - 2, TILE, 2);
-          // Windows on top wall
-          if (r === 0 && c > 1 && c < COLS - 2 && c % 4 === 0) {
-            // Window frame
-            ctx.fillStyle = "#8a7050";
-            ctx.fillRect(x + 3, y + 5, TILE - 6, TILE - 8);
-            // Glass - bright and cheerful
-            ctx.fillStyle = currentRoom === "focus" ? "#90d0f0" : "#d0a8e0";
-            ctx.fillRect(x + 5, y + 7, TILE - 10, TILE - 12);
-            // Cross frame
-            ctx.fillStyle = "#8a7050";
-            ctx.fillRect(x + TILE / 2 - 1, y + 7, 2, TILE - 12);
-            ctx.fillRect(x + 5, y + TILE / 2 - 1, TILE - 10, 2);
-          }
-          break;
-
-        case 2: // Desk
-          ctx.fillStyle = colors.desk;
-          ctx.fillRect(x + 2, y + 4, TILE - 4, TILE - 6);
-          ctx.fillStyle = colors.deskTop;
-          ctx.fillRect(x + 2, y + 4, TILE - 4, 6);
-          // Laptop
-          ctx.fillStyle = "#333";
-          ctx.fillRect(x + 8, y + 10, 16, 12);
-          ctx.fillStyle = currentRoom === "focus" ? "#88ccff" : "#88dd88";
-          ctx.fillRect(x + 9, y + 11, 14, 10);
-          break;
-
-        case 3: // Bookshelf
-          ctx.fillStyle = colors.bookshelf;
-          ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
-          for (let s = 0; s < 3; s++) {
-            const sy = y + 6 + s * 9;
-            ctx.fillStyle = "#5a4020";
-            ctx.fillRect(x + 3, sy + 7, TILE - 6, 2);
-            for (let b = 0; b < 4; b++) {
-              ctx.fillStyle = colors.bookColors[(c + s + b) % colors.bookColors.length];
-              ctx.fillRect(x + 5 + b * 6, sy, 5, 7);
+        if (!floorDrawn && !hasSprites) {
+          {
+            ctx.fillStyle = colors.floor;
+            ctx.fillRect(x, y, TILE, TILE);
+            if (ct === 0 || ct === 7 || ct === 8) {
+              const hash = (r * 31 + c * 17) % 8;
+              if (hash < 3) {
+                ctx.fillStyle = colors.floorDark;
+                ctx.fillRect(x, y, TILE, TILE);
+              }
+              ctx.fillStyle = "rgba(0,0,0,0.07)";
+              ctx.fillRect(x, y, TILE, 1);
+              ctx.fillRect(x, y, 1, TILE);
             }
           }
-          break;
+        }
+      }
 
-        case 4: // Plant
-          ctx.fillStyle = colors.plantPot;
-          ctx.fillRect(x + 10, y + 20, 12, 10);
-          ctx.fillStyle = colors.plant;
-          ctx.beginPath();
-          ctx.arc(x + 16, y + 14, 10, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = "#4a8858";
-          ctx.beginPath();
-          ctx.arc(x + 12, y + 11, 6, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(x + 20, y + 12, 5, 0, Math.PI * 2);
-          ctx.fill();
-          break;
+      // --- 1b. Wall layer ---
+      if (!onDoor && hasSprites && rd.wallGIDs) {
+        drawTileByGID(rd.wallGIDs[idx], x, y);
+      }
 
-        case 5: // Rug
-          ctx.fillStyle = colors.rug;
-          ctx.fillRect(x, y, TILE, TILE);
-          ctx.fillStyle = colors.rugAlt || colors.rug;
-          if ((r + c) % 2 === 0) {
-            ctx.fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
+      // --- 2. Objects layers ---
+      let objDrawn = false;
+      if (!onDoor && hasSprites && rd.objectLayers.length) {
+        for (const layerData of rd.objectLayers) {
+          if (layerData[idx]) {
+            if (drawTileByGID(layerData[idx], x, y)) objDrawn = true;
           }
-          break;
+        }
+      }
 
-        case 7: // Chair
-          ctx.fillStyle = colors.chair;
-          ctx.fillRect(x + 6, y + 6, 20, 20);
-          ctx.fillStyle = "#7ab87a";
-          ctx.fillRect(x + 8, y + 8, 16, 16);
-          break;
-
-        case 8: // Portal
-          drawPortal(x, y, colors);
-          break;
-
-        case 9: // Sofa
-          ctx.fillStyle = colors.sofa || "#7a3868";
-          ctx.fillRect(x + 2, y + 4, TILE - 4, TILE - 6);
-          ctx.fillStyle = colors.sofaTop || "#8a4878";
-          ctx.fillRect(x + 4, y + 6, TILE - 8, TILE - 10);
-          // Cushion
-          ctx.fillStyle = "#d8a0b8";
-          ctx.fillRect(x + 8, y + 10, 16, 10);
-          break;
-
-        case 10: // Coffee machine
-          ctx.fillStyle = colors.coffeeMachine || "#484848";
-          ctx.fillRect(x + 4, y + 4, TILE - 8, TILE - 6);
-          ctx.fillStyle = colors.coffeeTop || "#5a5a5a";
-          ctx.fillRect(x + 4, y + 4, TILE - 8, 8);
-          // Cup
-          ctx.fillStyle = "#fff";
-          ctx.fillRect(x + 12, y + 16, 8, 8);
-          // Steam
-          ctx.strokeStyle = "rgba(255,255,255,0.5)";
-          ctx.lineWidth = 1;
-          const t = Date.now() / 500;
-          ctx.beginPath();
-          ctx.moveTo(x + 16, y + 14);
-          ctx.quadraticCurveTo(x + 14 + Math.sin(t) * 3, y + 8, x + 16, y + 2);
-          ctx.stroke();
-          break;
+      // --- 3. Animation overlays + programmatic fallback ---
+      // When sprites are loaded, collision layer is pure logic (no colored blocks).
+      // Only portal glow and window sky/stars animate as overlays.
+      if (hasSprites) {
+        if (ct === 11) {
+          drawWindowTint(x, y);
+        }
+      } else {
+        // No sprites: full programmatic rendering (fallback)
+        switch (ct) {
+          case 1: {
+            ctx.fillStyle = colors.wall;
+            ctx.fillRect(x, y, TILE, TILE);
+            ctx.fillStyle = colors.wallDark;
+            ctx.fillRect(x, y + 15, TILE, 1);
+            if ((r + c) % 2 === 0) {
+              ctx.fillRect(x + 14, y, 1, 15);
+            } else {
+              ctx.fillRect(x + 14, y + 16, 1, 16);
+            }
+            ctx.fillStyle = colors.wallTop;
+            ctx.fillRect(x, y, TILE, 2);
+            ctx.fillStyle = "rgba(0,0,0,0.12)";
+            ctx.fillRect(x, y + TILE - 2, TILE, 2);
+            if (r === 0 && c > 1 && c < curCols - 2 && c % 4 === 0) {
+              drawWindow(x, y);
+            }
+            break;
+          }
+          case 2: {
+            ctx.fillStyle = colors.desk;
+            ctx.fillRect(x + 2, y + 4, TILE - 4, TILE - 6);
+            ctx.fillStyle = colors.deskTop;
+            ctx.fillRect(x + 2, y + 4, TILE - 4, 6);
+            ctx.fillStyle = "#333";
+            ctx.fillRect(x + 8, y + 10, 16, 12);
+            const screenFlicker = 0.85 + 0.15 * Math.sin(Date.now() / 2000 + c * 3.7);
+            const base = currentRoom === "focus" ? [136, 204, 255] : [136, 221, 136];
+            ctx.fillStyle = `rgb(${Math.floor(base[0]*screenFlicker)},${Math.floor(base[1]*screenFlicker)},${Math.floor(base[2]*screenFlicker)})`;
+            ctx.fillRect(x + 9, y + 11, 14, 10);
+            break;
+          }
+          case 3:
+            ctx.fillStyle = colors.bookshelf;
+            ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
+            for (let s = 0; s < 3; s++) {
+              const sy = y + 6 + s * 9;
+              ctx.fillStyle = "#5a4020";
+              ctx.fillRect(x + 3, sy + 7, TILE - 6, 2);
+              for (let b = 0; b < 4; b++) {
+                ctx.fillStyle = colors.bookColors[(c + s + b) % colors.bookColors.length];
+                ctx.fillRect(x + 5 + b * 6, sy, 5, 7);
+              }
+            }
+            break;
+          case 4:
+            ctx.fillStyle = colors.plantPot;
+            ctx.fillRect(x + 10, y + 20, 12, 10);
+            ctx.fillStyle = colors.plant;
+            ctx.beginPath();
+            ctx.arc(x + 16, y + 14, 10, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#4a8858";
+            ctx.beginPath();
+            ctx.arc(x + 12, y + 11, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(x + 20, y + 12, 5, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+          case 5:
+            ctx.fillStyle = colors.rug;
+            ctx.fillRect(x, y, TILE, TILE);
+            ctx.fillStyle = colors.rugAlt || colors.rug;
+            if ((r + c) % 2 === 0) {
+              ctx.fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
+            }
+            break;
+          case 7:
+            ctx.fillStyle = colors.chair;
+            ctx.fillRect(x + 6, y + 6, 20, 20);
+            ctx.fillStyle = "#7ab87a";
+            ctx.fillRect(x + 8, y + 8, 16, 16);
+            break;
+          case 8:
+            drawPortal(x, y, colors);
+            break;
+          case 9:
+            ctx.fillStyle = colors.sofa || "#7a3868";
+            ctx.fillRect(x + 2, y + 4, TILE - 4, TILE - 6);
+            ctx.fillStyle = colors.sofaTop || "#8a4878";
+            ctx.fillRect(x + 4, y + 6, TILE - 8, TILE - 10);
+            ctx.fillStyle = "#d8a0b8";
+            ctx.fillRect(x + 8, y + 10, 16, 10);
+            break;
+          case 10: {
+            ctx.fillStyle = colors.coffeeMachine || "#484848";
+            ctx.fillRect(x + 4, y + 4, TILE - 8, TILE - 6);
+            ctx.fillStyle = colors.coffeeTop || "#5a5a5a";
+            ctx.fillRect(x + 4, y + 4, TILE - 8, 8);
+            ctx.fillStyle = "#fff";
+            ctx.fillRect(x + 12, y + 16, 8, 8);
+            const st = Date.now() / 500;
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = "rgba(255,255,255,0.4)";
+            ctx.beginPath();
+            ctx.moveTo(x + 15, y + 14);
+            ctx.quadraticCurveTo(x + 13 + Math.sin(st) * 3, y + 8, x + 15 + Math.sin(st * 0.6) * 2, y + 2);
+            ctx.stroke();
+            ctx.strokeStyle = "rgba(255,255,255,0.2)";
+            ctx.beginPath();
+            ctx.moveTo(x + 17, y + 14);
+            ctx.quadraticCurveTo(x + 19 + Math.sin(st + 2) * 2.5, y + 9, x + 17 + Math.sin(st * 0.8 + 1) * 1.5, y + 4);
+            ctx.stroke();
+            break;
+          }
+          case 12: {
+            // Door fallback (no sprites): simple colored rectangle
+            const doorOpen = isDoorOpenAt(c, r);
+            ctx.fillStyle = doorOpen ? "rgba(180,220,240,0.3)" : "rgba(180,220,240,0.7)";
+            ctx.fillRect(x + 2, y, TILE - 4, TILE);
+            ctx.strokeStyle = "#8ab0c0";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 2, y, TILE - 4, TILE);
+            break;
+          }
+        }
       }
     }
   }
 
+  // --- Draw animated doors on top of all tiles ---
+  const doors = roomDoors[currentRoom];
+  if (doors && doors.length && doorSlidingImg._loaded) {
+    for (const d of doors) {
+      ctx.drawImage(doorSlidingImg, d.frame * DOOR_FRAME_W, 0, DOOR_FRAME_W, DOOR_FRAME_H,
+                    d.x, d.y, DOOR_FRAME_W, DOOR_FRAME_H);
+    }
+  }
 }
 
-// Animated portal - drawn once across all portal tiles
+// Draw "above*" layers on top of players
+function drawAboveLayers() {
+  const rd = ROOM_DATA[currentRoom];
+  if (!rd.aboveLayers || !rd.aboveLayers.length) return;
+  const hasSprites = tilesetRegistry.length > 0;
+  if (!hasSprites) return;
+  const curCols = getCols();
+  const curRows = getRows();
+  for (let r = 0; r < curRows; r++) {
+    for (let c = 0; c < curCols; c++) {
+      const idx = r * curCols + c;
+      for (const layerData of rd.aboveLayers) {
+        if (layerData[idx]) {
+          drawTileByGID(layerData[idx], c * TILE, r * TILE);
+        }
+      }
+    }
+  }
+}
+
+// Window light spills on floor (called after drawRoom)
+function drawWindowLightSpills() {
+  const tv = TIME_VISUALS[cachedTimeKey];
+  if (!tv.windowGlow) return;
+
+  const map = getCurrentMap();
+  for (let c = 4; c < getCols() - 2; c += 4) {
+    if (map[0][c] !== 1 && map[0][c] !== 11) continue;
+    const x = c * TILE;
+    const spillW = TILE + 8;
+    const spillH = TILE * 2.5;
+    const spillX = x + TILE / 2 - spillW / 2;
+    const spillY = TILE;
+
+    const spillGrad = ctx.createLinearGradient(spillX, spillY, spillX, spillY + spillH);
+    spillGrad.addColorStop(0, tv.windowGlow);
+    spillGrad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = spillGrad;
+    ctx.fillRect(spillX, spillY, spillW, spillH);
+  }
+}
+
+// Dust motes floating in window light
+const dustMotes = [];
+const MAX_DUST = 15;
+
+function updateAndDrawDustMotes() {
+  if (cachedTimeKey === "night") return;
+
+  if (dustMotes.length < MAX_DUST && Math.random() < 0.02) {
+    const wp = WINDOW_POSITIONS[Math.floor(Math.random() * WINDOW_POSITIONS.length)];
+    dustMotes.push({
+      x: wp.x + (Math.random() - 0.5) * TILE * 1.5,
+      y: TILE + Math.random() * TILE * 3,
+      vx: (Math.random() - 0.5) * 0.08,
+      vy: -0.05 - Math.random() * 0.05,
+      life: 200 + Math.random() * 200,
+      size: 1,
+    });
+  }
+
+  for (let i = dustMotes.length - 1; i >= 0; i--) {
+    const d = dustMotes[i];
+    d.x += d.vx + Math.sin(Date.now() / 3000 + i) * 0.02;
+    d.y += d.vy;
+    d.life--;
+    if (d.life <= 0) { dustMotes.splice(i, 1); continue; }
+    const alpha = Math.min(d.life / 60, 1) * (cachedTimeKey === "morning" ? 0.4 : 0.2);
+    ctx.fillStyle = `rgba(255,255,240,${alpha})`;
+    ctx.fillRect(Math.round(d.x), Math.round(d.y), d.size, d.size);
+  }
+}
+
+// Time-aware window tint overlay (applied on top of pixel-art window tiles)
+function drawWindowTint(x, y) {
+  const tv = TIME_VISUALS[cachedTimeKey];
+  ctx.fillStyle = tv.windowGlass;
+  ctx.globalAlpha = 0.25;
+  ctx.fillRect(x, y, TILE, TILE);
+  ctx.globalAlpha = 1;
+
+  // Stars at night
+  if (tv.starCount > 0) {
+    ctx.fillStyle = "#fff";
+    const seed = x * 7 + y * 13;
+    for (let s = 0; s < tv.starCount; s++) {
+      const sx = x + 4 + ((seed * (s + 1) * 31) % (TILE - 8));
+      const sy = y + 4 + ((seed * (s + 1) * 17) % (TILE - 8));
+      const twinkle = 0.4 + 0.6 * Math.sin(Date.now() / 1000 + s * 2.1);
+      ctx.globalAlpha = twinkle;
+      ctx.fillRect(sx, sy, 1, 1);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Programmatic window (fallback when no sprites)
+function drawWindow(x, y) {
+  const tv = TIME_VISUALS[cachedTimeKey];
+  ctx.fillStyle = "#8a7050";
+  ctx.fillRect(x + 3, y + 5, TILE - 6, TILE - 8);
+  const skyGrad = ctx.createLinearGradient(x + 5, y + 7, x + 5, y + 7 + TILE - 12);
+  tv.skyColors.forEach((color, i) => {
+    skyGrad.addColorStop(i / (tv.skyColors.length - 1), color);
+  });
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(x + 5, y + 7, TILE - 10, TILE - 12);
+  if (tv.starCount > 0) {
+    ctx.fillStyle = "#fff";
+    const seed = x * 7 + y * 13;
+    for (let s = 0; s < tv.starCount; s++) {
+      const sx = x + 6 + ((seed * (s + 1) * 31) % (TILE - 12));
+      const sy = y + 8 + ((seed * (s + 1) * 17) % (TILE - 14));
+      const twinkle = 0.4 + 0.6 * Math.sin(Date.now() / 1000 + s * 2.1);
+      ctx.globalAlpha = twinkle;
+      ctx.fillRect(sx, sy, 1, 1);
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = tv.windowGlass;
+  ctx.globalAlpha = 0.35;
+  ctx.fillRect(x + 5, y + 7, TILE - 10, TILE - 12);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#8a7050";
+  ctx.fillRect(x + TILE / 2 - 1, y + 7, 2, TILE - 12);
+  ctx.fillRect(x + 5, y + TILE / 2 - 1, TILE - 10, 2);
+  ctx.fillStyle = "#a08860";
+  ctx.fillRect(x + 3, y + 5, TILE - 6, 1);
+}
+
+// Portal label only (no color overlay, for sprite mode)
+let portalLabelDrawnThisFrame = false;
+function drawPortalLabel(x, y, colors) {
+  if (portalLabelDrawnThisFrame) return;
+  portalLabelDrawnThisFrame = true;
+
+  const map = getCurrentMap();
+  let minC = getCols(), maxC = 0, portalRow = 0;
+  for (let r = 0; r < getRows(); r++) {
+    for (let c = 0; c < getCols(); c++) {
+      if (map[r][c] === 8) {
+        if (c < minC) minC = c;
+        if (c > maxC) maxC = c;
+        portalRow = r;
+      }
+    }
+  }
+  const px = minC * TILE;
+  const py = portalRow * TILE;
+  const pw = (maxC - minC + 1) * TILE;
+
+  const label = currentRoom === "focus" ? t("portalToLounge") : t("portalToFocus");
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const ps = gameToScreen(px + pw / 2, py - 10);
+  ctx.font = "bold 16px 'MiSans', sans-serif";
+  ctx.letterSpacing = "0.32px";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const textWidth = ctx.measureText(label).width;
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(ps.x - textWidth / 2 - 6, ps.y - 8, textWidth + 12, 16);
+  ctx.fillStyle = "#fff";
+  ctx.globalAlpha = 0.8;
+  ctx.fillText(label, ps.x, ps.y);
+  ctx.restore();
+}
+
+// Animated portal - drawn once across all portal tiles (fallback, no sprites)
 let portalAnim = 0;
 let portalDrawnThisFrame = false;
 
@@ -650,9 +1323,9 @@ function drawPortal(x, y, colors) {
 
   // Find all portal tiles to get full bounds
   const map = getCurrentMap();
-  let minC = COLS, maxC = 0, portalRow = 0;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  let minC = getCols(), maxC = 0, portalRow = 0;
+  for (let r = 0; r < getRows(); r++) {
+    for (let c = 0; c < getCols(); c++) {
       if (map[r][c] === 8) {
         if (c < minC) minC = c;
         if (c > maxC) maxC = c;
@@ -748,6 +1421,15 @@ function hashColor(id) {
   return BODY_COLORS[Math.abs(hash) % BODY_COLORS.length];
 }
 
+function hashCharacter(id) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = ((hash << 5) - hash) + id.charCodeAt(i);
+    hash |= 0;
+  }
+  return CHARACTER_NAMES[Math.abs(hash) % CHARACTER_NAMES.length];
+}
+
 // Lighten a hex color for use on dark backgrounds
 function lightenColor(hex, amount) {
   const r = parseInt(hex.slice(1,3), 16);
@@ -759,96 +1441,59 @@ function lightenColor(hex, amount) {
   return `rgb(${Math.round(lr)},${Math.round(lg)},${Math.round(lb)})`;
 }
 
+// Sprite animation direction offsets (each direction = 6 frames in a 24-col sheet)
+const SPRITE_DIR_OFFSET = { right: 0, up: 6, left: 12, down: 18 };
+const SPRITE_IDLE_MS = 200; // ms per idle frame
+const SPRITE_RUN_MS  = 100; // ms per run frame
+
+function getPlayerAnimState(player) {
+  if (!player._animState) {
+    player._animState = {
+      prevX: player.x,
+      prevY: player.y,
+      moving: false,
+      frame: 0,
+      lastFrameTime: Date.now(),
+    };
+  }
+  const st = player._animState;
+  const now = Date.now();
+  const dx = player.x - st.prevX;
+  const dy = player.y - st.prevY;
+  st.moving = (dx !== 0 || dy !== 0);
+  st.prevX = player.x;
+  st.prevY = player.y;
+
+  const interval = st.moving ? SPRITE_RUN_MS : SPRITE_IDLE_MS;
+  if (now - st.lastFrameTime >= interval) {
+    st.frame = (st.frame + 1) % 6;
+    st.lastFrameTime = now;
+  }
+  return st;
+}
+
 function drawPlayerBody(player, isLocal) {
   const { x, y } = player;
-  const color = hashColor(player.id);
 
   // Shadow
   ctx.fillStyle = "rgba(0,0,0,0.18)";
   ctx.beginPath();
-  ctx.ellipse(x, y + 12, 9, 3, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, y + 12, 10, 3.5, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Body (rounded capsule / pill shape)
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(x - 8, y - 2);
-  ctx.lineTo(x - 8, y + 6);
-  ctx.arc(x, y + 6, 8, Math.PI, 0, true);   // rounded bottom
-  ctx.lineTo(x + 8, y - 2);
-  ctx.arc(x, y - 2, 8, 0, Math.PI, true);    // rounded top (shoulders)
-  ctx.fill();
+  // Determine sprite
+  const charName = player.character || hashCharacter(player.id);
+  const animState = getPlayerAnimState(player);
+  const sheetKey = animState.moving ? `char_${charName}_run` : `char_${charName}_idle`;
+  const sheet = spriteImages[sheetKey];
+  if (!sheet || !sheet._loaded) return;
 
-  // Subtle shirt line
-  const darkerColor = darkenColor(color, 0.12);
-  ctx.strokeStyle = darkerColor;
-  ctx.lineWidth = 0.5;
-  ctx.beginPath();
-  ctx.moveTo(x - 6, y - 2);
-  ctx.lineTo(x + 6, y - 2);
-  ctx.stroke();
+  const dir = player.direction || "down";
+  const col = (SPRITE_DIR_OFFSET[dir] || 0) + animState.frame;
+  const sx = col * 32;
 
-  // Head (round, slightly larger than body width)
-  ctx.fillStyle = "#fdd5a0";
-  ctx.beginPath();
-  ctx.arc(x, y - 12, 9, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Eyes (with blinking)
-  if (!player._blinkState) {
-    let seed = 0;
-    for (let i = 0; i < player.id.length; i++) seed += player.id.charCodeAt(i);
-    player._blinkState = {
-      nextBlink: Date.now() + (seed % 5000),
-      blinkCount: 0,
-      blinkPhase: 0,
-    };
-  }
-  const bs = player._blinkState;
-  const now = Date.now();
-  let isBlinking = false;
-
-  if (bs.blinkPhase > 0) {
-    // In a blink sequence
-    isBlinking = (bs.blinkPhase % 300) < 150;  // 150ms closed, 150ms open per blink
-    bs.blinkPhase = now - bs._blinkStart;
-    const totalDuration = bs.blinkCount * 300;
-    if (bs.blinkPhase >= totalDuration) {
-      bs.blinkPhase = 0;
-      bs.nextBlink = now + 8000 + Math.random() * 37000;  // next in 8~45s
-    }
-  } else if (now >= bs.nextBlink) {
-    // Start new blink sequence (1 or 2 blinks)
-    bs.blinkCount = Math.random() < 0.5 ? 1 : 2;
-    bs.blinkPhase = 1;
-    bs._blinkStart = now;
-    isBlinking = true;
-  }
-
-  ctx.fillStyle = "#2a2a3a";
-  if (isBlinking) {
-    ctx.fillRect(x - 4, y - 12.5, 2.4, 1);
-    ctx.fillRect(x + 1.6, y - 12.5, 2.4, 1);
-  } else {
-    ctx.beginPath();
-    ctx.arc(x - 3, y - 12, 1.2, 0, Math.PI * 2);
-    ctx.arc(x + 3, y - 12, 1.2, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Blush
-  ctx.fillStyle = "rgba(255,140,140,0.25)";
-  ctx.beginPath();
-  ctx.arc(x - 6, y - 10, 2, 0, Math.PI * 2);
-  ctx.arc(x + 6, y - 10, 2, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function darkenColor(hex, amount) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgb(${Math.round(r * (1 - amount))},${Math.round(g * (1 - amount))},${Math.round(b * (1 - amount))})`;
+  // Sprite frames are 32x64 (full sheet height). Feet at ~row 58, aligned with shadow at y+12.
+  ctx.drawImage(sheet, sx, 0, 32, 64, x - 16, y - 46, 32, 64);
 }
 
 // Convert game coords to screen coords (bypassing canvas transform)
@@ -879,7 +1524,7 @@ function drawPlayerLabel(player) {
   const lw = nameWidth + px * 2 + fade * 2;
   const lh = 16 + py * 2;
   const lx = Math.round(s.x - lw / 2);
-  const ly = Math.round(s.y - 34 * gameScale - py);
+  const ly = Math.round(s.y - 50 * gameScale - py);
   const grad = ctx.createLinearGradient(lx, 0, lx + lw, 0);
   grad.addColorStop(0, "rgba(0,0,0,0)");
   grad.addColorStop(fade * 0.4 / lw, "rgba(0,0,0,0.15)");
@@ -905,7 +1550,7 @@ function drawPlayerLabel(player) {
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
     ctx.fillStyle = "#fff";
-    ctx.fillText(t("grabCoffee"), s.x, emojiY);
+    ctx.fillText(entranceWalking ? t("checkingIn") : t("grabCoffee"), s.x, emojiY);
   } else if (player.id === myId && emojiSuppressUntil && Date.now() < emojiSuppressUntil) {
     // suppressed
   } else {
@@ -936,12 +1581,60 @@ function drawChatBubble(player) {
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
   const s = gameToScreen(player.x, player.y);
-  const by = Math.round(s.y - 56 * gameScale);
+  const by = Math.round(s.y - 72 * gameScale);
   ctx.fillStyle = "rgba(0,0,0,0.7)";
   ctx.fillText(bubble.text, s.x + 1, by + 1);
   ctx.fillStyle = "#fff";
   ctx.fillText(bubble.text, s.x, by);
   ctx.restore();
+}
+
+// ============================================================
+// TILED MAP OBJECTS (animated sprites from object layer)
+// ============================================================
+
+const OBJ_FRAME_MS = 200; // ms per animation frame
+let petInteractTimer = 0; // cooldown to prevent spam
+
+function findTilesetForGID(gid) {
+  for (let i = tilesetRegistry.length - 1; i >= 0; i--) {
+    if (gid >= tilesetRegistry[i].firstgid) return tilesetRegistry[i];
+  }
+  return null;
+}
+
+function drawMapObjects() {
+  const objs = ROOM_DATA[currentRoom].mapObjects;
+  if (!objs || !objs.length) return;
+
+  const now = Date.now();
+
+  for (const obj of objs) {
+    const ts = findTilesetForGID(obj.gid);
+    if (!ts || !ts.img || !ts.img._loaded || !ts.frameCount) continue;
+
+    const frame = Math.floor(now / OBJ_FRAME_MS) % ts.frameCount;
+    const localId = frame; // animate from first frame of tileset
+    const sx = (localId % ts.columns) * ts.tileW;
+    const sy = Math.floor(localId / ts.columns) * ts.tileH;
+
+    ctx.drawImage(ts.img, sx, sy, ts.tileW, ts.tileH, obj.x, obj.y, ts.tileW, ts.tileH);
+
+    // Draw name label for pets
+    if (obj.name && obj.type === "pet") {
+      ctx.save();
+      ctx.font = "bold 7px MiSans, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
+      const labelX = obj.x + ts.tileW / 2;
+      const labelY = obj.y - 4;
+      const tw = ctx.measureText(obj.name).width;
+      ctx.fillRect(labelX - tw / 2 - 2, labelY - 6, tw + 4, 8);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(obj.name, labelX, labelY);
+      ctx.restore();
+    }
+  }
 }
 
 // ============================================================
@@ -1695,7 +2388,7 @@ function drawPlayerFire(player) {
   const intensity = getFlameIntensity(elapsed);
 
   const fireX = player.x + 8;
-  const fireY = player.y - 38;
+  const fireY = player.y - 54;
 
   const flameHeight = 5 + intensity * 9;
   const flameWidth = 2.5 + intensity * 4;
@@ -1780,7 +2473,7 @@ function drawPlayerFire(player) {
       ctx.globalAlpha = fadeIn * fadeOut;
       ctx.font = "14px 'MiSans', sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("\u{1F4A7}", player.x + 12, player.y - 16 + sweatBob);
+      ctx.fillText("\u{1F4A7}", player.x + 12, player.y - 32 + sweatBob);
       ctx.restore();
     }
   }
@@ -1992,6 +2685,26 @@ canvas.addEventListener("click", (e) => {
     return;
   }
 
+  // Map object click (Tiled object layer - pets etc.)
+  const mapObjs = ROOM_DATA[currentRoom].mapObjects;
+  if (mapObjs && mapObjs.length && Date.now() > petInteractTimer) {
+    for (const obj of mapObjs) {
+      if (obj.type !== "pet") continue;
+      const ts = findTilesetForGID(obj.gid);
+      if (!ts) continue;
+      const cx = obj.x + ts.tileW / 2;
+      const cy = obj.y + ts.tileH / 2;
+      if (Math.abs(clickX - cx) < ts.tileW / 2 + 4 && Math.abs(clickY - cy) < ts.tileH / 2 + 4) {
+        if (localPlayer && localPlayer.name === obj.allowedPlayer) {
+          spawnOneHeart(cx, obj.y);
+          playPurr();
+        }
+        petInteractTimer = Date.now() + 1000;
+        return;
+      }
+    }
+  }
+
   // Cat click (original behavior)
   if (catData.room !== currentRoom) return;
   const dx = clickX - catData.x;
@@ -2041,15 +2754,31 @@ let lastKeyPressTime = Date.now();
 let autoWalking = false;
 let autoWalkPath = [];    // waypoint queue [{x,y}, ...]
 let awStuckFrames = 0;
+let entranceWalking = false;
 const IDLE_MS = 30000;          // post-focus auto-walk delay
 const DAYDREAM_MS = 5 * 60 * 1000;    // 5min
 const IDLE_LEAVE_MS = 10 * 60 * 1000; // 10min
 
+// Find portal center from current room collision data
+function findPortalInCurrentRoom() {
+  const map = getCurrentMap();
+  const rows = getRows(), cols = getCols();
+  let sumX = 0, sumY = 0, count = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (map[r][c] === 8) {
+        sumX += c * TILE + TILE / 2;
+        sumY += r * TILE + TILE / 2;
+        count++;
+      }
+    }
+  }
+  return count > 0 ? { x: sumX / count, y: sumY / count } : { x: 15 * TILE + 16, y: TILE / 2 };
+}
+
 function startAutoWalk() {
   autoWalking = true;
   awStuckFrames = 0;
-  // Desk columns: 4-7, 14-17, 24-27
-  // Safe columns (clear vertical path): 2-3, 8-13, 18-23, 28-29
   const safeCols = [2,3,8,9,10,11,12,13,18,19,20,21,22,23,28,29];
   const playerCol = Math.floor(localPlayer.x / TILE);
   let bestCol = 10;
@@ -2059,15 +2788,33 @@ function startAutoWalk() {
     if (d < bestDist) { bestDist = d; bestCol = sc; }
   }
   const safeX = bestCol * TILE + TILE / 2;
-  const belowDesksY = 13 * TILE + TILE / 2;
-  const portalX = 15 * TILE + TILE / 2;
-  const portalY = 16 * TILE + TILE / 2;
+  const portal = findPortalInCurrentRoom();
+  // Walk to a safe row first, then align with portal, then walk to portal
+  const aboveDesksY = 2 * TILE + TILE / 2;
   autoWalkPath = [
-    { x: safeX, y: localPlayer.y },  // sidestep to safe column
-    { x: safeX, y: belowDesksY },    // walk down through clear column
-    { x: portalX, y: belowDesksY },  // align with portal
-    { x: portalX, y: portalY },      // walk into portal
+    { x: safeX, y: localPlayer.y },
+    { x: safeX, y: aboveDesksY },
+    { x: portal.x, y: aboveDesksY },
+    { x: portal.x, y: portal.y },
   ];
+}
+
+function startEntranceWalk() {
+  if (!localPlayer || currentRoom !== "focus") return;
+  entranceWalking = true;
+  autoWalking = true;
+  awStuckFrames = 0;
+  // Walk from entrance (bottom) upward into the main Focus Zone area
+  const dims = ROOM_DIMS.focus;
+  const targetRow = Math.min(dims.rows - 5, 14);
+  const targetX = Math.floor(dims.cols / 2) * TILE;
+  const targetY = targetRow * TILE + TILE / 2;
+  autoWalkPath = [
+    { x: targetX, y: localPlayer.y },
+    { x: targetX, y: targetY },
+  ];
+  document.getElementById("autowalk-hint").textContent = t("checkingIn");
+  document.getElementById("autowalk-hint").style.display = "block";
 }
 let focusPortalPending = false;
 let postFocusTime = 0; // timestamp when focus ended, 0 = not in post-focus state
@@ -2086,6 +2833,7 @@ document.addEventListener("keydown", (e) => {
   if (autoWalking) {
     autoWalking = false;
     autoWalkPath = [];
+    entranceWalking = false;
     postFocusTime = 0;
     document.getElementById("autowalk-hint").style.display = "none";
   }
@@ -2163,11 +2911,15 @@ function submitWelcome() {
   if (!name) return;
   nameInput.value = name;
   localStorage.setItem("playerName", name);
+  localStorage.setItem("playerCharacter", selectedCharacter);
   if (localPlayer) {
     localPlayer.name = name;
+    localPlayer.character = selectedCharacter;
     socket.emit("setName", name);
+    socket.emit("setCharacter", selectedCharacter);
   }
   welcomePopup.classList.add("hidden");
+  setTimeout(() => startEntranceWalk(), 300);
 }
 
 welcomeEnter.addEventListener("click", submitWelcome);
@@ -2814,7 +3566,7 @@ const AMBIENT_MIN_DIST = 20;
 const AMBIENT_MAX_VOL = 0.4;
 // Window positions: row 0, columns where c > 1 && c < 30 && c % 4 === 0
 const WINDOW_POSITIONS = [];
-for (let c = 4; c < COLS - 2; c += 4) {
+for (let c = 4; c < 30; c += 4) {
   WINDOW_POSITIONS.push({ x: c * TILE + TILE / 2, y: TILE / 2 });
 }
 
@@ -2822,8 +3574,8 @@ function getAmbientKey() {
   const hour = new Date().getHours();
   if (hour >= 6 && hour < 11) return "morning";
   if (hour >= 11 && hour < 17) return "daytime";
-  if (hour >= 20 || hour < 6) return "night";
-  return "daytime"; // 17:00 - 20:00 dusk: same as daytime for now
+  if (hour >= 17 && hour < 20) return "dusk";
+  return "night"; // 20:00 - 6:00
 }
 
 function stopAllAmbient() {
@@ -2850,7 +3602,7 @@ function updateAmbientSound() {
 
   if (!wantKey) return;
 
-  const audio = ambientSounds[wantKey];
+  const audio = ambientSounds[wantKey] || ambientSounds["daytime"];
 
   // Find closest window
   let closestDist = Infinity;
@@ -2939,6 +3691,11 @@ volumeSlider.addEventListener("input", () => {});
 // SOCKET EVENTS
 // ============================================================
 
+socket.on("roomDimensions", (dims) => {
+  if (dims.focus) ROOM_DIMS.focus = dims.focus;
+  if (dims.rest) ROOM_DIMS.rest = dims.rest;
+});
+
 socket.on("currentPlayers", (players) => {
   myId = socket.id;
   for (const id in players) {
@@ -2950,8 +3707,19 @@ socket.on("currentPlayers", (players) => {
         localPlayer.name = sn;
         socket.emit("setName", sn);
       }
+      // Apply saved character on connect
+      const sc = localStorage.getItem("playerCharacter");
+      if (sc) {
+        localPlayer.character = sc;
+        selectedCharacter = sc;
+        socket.emit("setCharacter", sc);
+      }
       currentRoom = localPlayer.room;
       updateRoomUI();
+      // Returning user with saved name: auto-walk from entrance
+      if (sn && currentRoom === "focus") {
+        setTimeout(() => startEntranceWalk(), 300);
+      }
     } else {
       otherPlayers[id] = players[id];
     }
@@ -2981,6 +3749,7 @@ socket.on("playerUpdated", (player) => {
   if (player.id === myId) {
     localPlayer.name = player.name;
     localPlayer.status = player.status;
+    localPlayer.character = player.character;
     localPlayer.isFocusing = player.isFocusing;
     localPlayer.focusStartTime = player.focusStartTime;
     localPlayer.focusCategory = player.focusCategory;
@@ -2988,6 +3757,7 @@ socket.on("playerUpdated", (player) => {
   } else if (otherPlayers[player.id]) {
     otherPlayers[player.id].name = player.name;
     otherPlayers[player.id].status = player.status;
+    otherPlayers[player.id].character = player.character;
     otherPlayers[player.id].isFocusing = player.isFocusing;
     otherPlayers[player.id].focusStartTime = player.focusStartTime;
     otherPlayers[player.id].focusCategory = player.focusCategory;
@@ -3203,7 +3973,11 @@ function update() {
       }
     }
     if (autoWalkPath.length === 0) {
-      autoWalking = false; // done
+      autoWalking = false;
+      if (entranceWalking) {
+        entranceWalking = false;
+        document.getElementById("autowalk-hint").style.display = "none";
+      }
     }
   }
 
@@ -3244,9 +4018,16 @@ function draw() {
   ctx.save();
   const gs = gameScale * dpr;
   ctx.setTransform(gs, 0, 0, gs, -cameraX * gs, -cameraY * gs);
+  ctx.imageSmoothingEnabled = false;
 
+  cachedTimeKey = getAmbientKey();
   portalDrawnThisFrame = false;
+  portalLabelDrawnThisFrame = false;
+  updateDoors();
   drawRoom();
+  drawWindowLightSpills();
+  updateAndDrawDustMotes();
+  drawMapObjects();
   drawCatBody();
   drawCatUI();
 
@@ -3267,6 +4048,8 @@ function draw() {
     drawChatBubble(localPlayer);
   }
 
+  drawAboveLayers();
+
   updateAndDrawHearts();
   updateAndDrawFire();
   updateAndDrawScatterGifts();
@@ -3280,12 +4063,21 @@ function draw() {
 }
 
 function drawVignette() {
+  const tv = TIME_VISUALS[cachedTimeKey];
+
+  // Time-of-day color overlay
+  if (tv.overlayColor) {
+    ctx.fillStyle = tv.overlayColor;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // Vignette with time-dependent darkness
   const grd = ctx.createRadialGradient(
     canvas.width / 2, canvas.height / 2, canvas.height * 0.35,
     canvas.width / 2, canvas.height / 2, canvas.height * 0.85
   );
   grd.addColorStop(0, "rgba(0,0,0,0)");
-  grd.addColorStop(1, "rgba(0,0,0,0.1)");
+  grd.addColorStop(1, `rgba(0,0,0,${tv.vignetteAlpha})`);
   ctx.fillStyle = grd;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
@@ -3386,6 +4178,7 @@ if (isTouchDevice) {
     if (autoWalking) {
       autoWalking = false;
       autoWalkPath = [];
+      entranceWalking = false;
       postFocusTime = 0;
       document.getElementById("autowalk-hint").style.display = "none";
     }

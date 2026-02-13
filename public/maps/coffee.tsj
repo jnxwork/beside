@@ -1,0 +1,14 @@
+{ "columns":6,
+ "image":"..\/assets\/moderninteriors-win\/3_Animated_objects\/32x32\/spritesheets\/animated_coffee_32x32.png",
+ "imageheight":64,
+ "imagewidth":192,
+ "margin":0,
+ "name":"coffee",
+ "spacing":0,
+ "tilecount":12,
+ "tiledversion":"1.11.2",
+ "tileheight":32,
+ "tilewidth":32,
+ "type":"tileset",
+ "version":"1.10"
+}
