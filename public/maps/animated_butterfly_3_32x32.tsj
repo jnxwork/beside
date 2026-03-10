@@ -1,0 +1,14 @@
+{ "columns":4,
+ "image":"..\/assets\/moderninteriors-win\/3_Animated_objects\/32x32\/spritesheets\/animated_butterfly_3_32x32.png",
+ "imageheight":32,
+ "imagewidth":128,
+ "margin":0,
+ "name":"animated_butterfly_3_32x32",
+ "spacing":0,
+ "tilecount":4,
+ "tiledversion":"1.11.2",
+ "tileheight":32,
+ "tilewidth":32,
+ "type":"tileset",
+ "version":"1.10"
+}

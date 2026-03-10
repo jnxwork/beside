@@ -1,0 +1,14 @@
+{ "columns":14,
+ "image":"..\/assets\/moderninteriors-win\/3_Animated_objects\/32x32\/spritesheets\/animated_door_glass_sliding_32x32.png",
+ "imageheight":64,
+ "imagewidth":896,
+ "margin":0,
+ "name":"door_glass_sliding",
+ "spacing":0,
+ "tilecount":14,
+ "tiledversion":"1.11.2",
+ "tileheight":64,
+ "tilewidth":64,
+ "type":"tileset",
+ "version":"1.10"
+}

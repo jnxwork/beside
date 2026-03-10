@@ -1,0 +1,14 @@
+{ "columns":8,
+ "image":"..\/assets\/modernexteriors-win\/Modern_Exteriors_48x48\/Animated_48x48\/Animated_Terrains_48x48\/Water_Tileset_48x48.png",
+ "imageheight":144,
+ "imagewidth":1152,
+ "margin":0,
+ "name":"Water_Tileset_48x48",
+ "spacing":0,
+ "tilecount":8,
+ "tiledversion":"1.11.2",
+ "tileheight":144,
+ "tilewidth":144,
+ "type":"tileset",
+ "version":"1.10"
+}

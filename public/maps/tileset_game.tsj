@@ -1,12 +1,12 @@
 {
-  "columns": 13,
+  "columns": 18,
   "image": "tileset_game.png",
   "imageheight": 32,
-  "imagewidth": 416,
+  "imagewidth": 576,
   "margin": 0,
   "name": "Game Tiles",
   "spacing": 0,
-  "tilecount": 13,
+  "tilecount": 18,
   "tiledversion": "1.11.2",
   "tileheight": 32,
   "tilewidth": 32,
@@ -19,12 +19,17 @@
     { "id": 3,  "type": "bookshelf",      "color": "#5C4020", "label": "BS" },
     { "id": 4,  "type": "plant",          "color": "#40A050", "label": "PL" },
     { "id": 5,  "type": "rug",            "color": "#C0A080", "label": "RG" },
-    { "id": 6,  "type": "unused",         "color": "#808080", "label": "XX" },
+    { "id": 6,  "type": "stairs",         "color": "#808080", "label": "ST" },
     { "id": 7,  "type": "chair",          "color": "#50A070", "label": "CH" },
     { "id": 8,  "type": "portal",         "color": "#E06080", "label": "PT" },
     { "id": 9,  "type": "sofa",           "color": "#A050A0", "label": "SF" },
     { "id": 10, "type": "coffee_machine", "color": "#505050", "label": "CM" },
     { "id": 11, "type": "window",         "color": "#A0C8F0", "label": "WN" },
-    { "id": 12, "type": "door",           "color": "#E0C040", "label": "DR" }
+    { "id": 12, "type": "door",           "color": "#E0C040", "label": "DR" },
+    { "id": 13, "type": "zabuton",        "color": "#C06848", "label": "ZB" },
+    { "id": 14, "type": "futon",          "color": "#4060A0", "label": "FT" },
+    { "id": 15, "type": "yoga_mat",       "color": "#80C060", "label": "YM" },
+    { "id": 16, "type": "outdoor",        "color": "#60B0E0", "label": "OD" },
+    { "id": 17, "type": "pond",           "color": "#28508C", "label": "PD" }
   ]
 }

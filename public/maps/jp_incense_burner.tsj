@@ -1,0 +1,14 @@
+{ "columns":4,
+ "image":"..\/assets\/moderninteriors-win\/3_Animated_objects\/32x32\/spritesheets\/animated_incense_burner_4_10_loop_32x32.png",
+ "imageheight":96,
+ "imagewidth":416,
+ "margin":0,
+ "name":"jp_incense_burner",
+ "spacing":0,
+ "tilecount":12,
+ "tiledversion":"1.11.2",
+ "tileheight":32,
+ "tilewidth":96,
+ "type":"tileset",
+ "version":"1.10"
+}

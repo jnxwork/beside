@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Stay Together</title>
+  <title>Beside</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#2a2838">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -12,6 +12,13 @@
   <link rel="stylesheet" crossorigin="anonymous" href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --ui-icon-frame-size: 40px;
+      --ui-icon-inner-size: 24px;
+      --ui-icon-radius: 10px;
+      --ui-emoji-min-size: var(--ui-icon-inner-size);
+      --ui-online-emoji-size: 20px;
+    }
     body {
       background: #2a2838;
       display: flex;
@@ -43,6 +50,54 @@
       image-rendering: pixelated;
       image-rendering: crisp-edges;
     }
+
+    /* Loading overlay */
+    #loading-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #2a2838;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      transition: opacity 0.5s ease;
+    }
+    #loading-overlay.fade-out {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #loading-overlay.hidden { display: none; }
+    #loading-inner {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    #loading-spinner {
+      width: 32px;
+      height: 32px;
+      border: 4px solid rgba(255,255,255,0.15);
+      border-top-color: #f5a623;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading-text {
+      color: #999;
+      font-size: 14px;
+    }
+    #loading-retry {
+      background: #f5a623;
+      color: #fff;
+      border: none;
+      padding: 8px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    #loading-retry:hover { background: #d08e1d; }
 
     /* Room label — fades in then out */
     #room-label {
@@ -82,7 +137,36 @@
       transition: background 0.3s ease;
     }
     #info-panel:hover { background: rgba(42,40,56,0.85); }
-    #online-total { color: #53d769; font-weight: bold; font-size: 16px; white-space: nowrap; }
+    #online-total {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #eee;
+      font-weight: bold;
+      white-space: nowrap;
+      min-height: var(--ui-icon-frame-size);
+    }
+    #online-status-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+    }
+    #online-status-emoji {
+      font-size: var(--ui-online-emoji-size);
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: var(--ui-online-emoji-size);
+      height: var(--ui-online-emoji-size);
+    }
+    #online-count {
+      font-size: 16px;
+      color: #53d769;
+      min-width: 14px;
+      text-align: left;
+    }
     #online-detail {
       display: flex;
       gap: 8px;
@@ -99,47 +183,147 @@
       margin-left: 8px;
     }
     #online-sep { color: rgba(255,255,255,0.3); font-size: 16px; }
-    #online-focus { color: #7ec8e3; font-size: 14px; }
+    #online-focus { color: #7ec8e3; }
     #online-dot { color: rgba(255,255,255,0.3); font-size: 14px; }
-    #online-lounge { color: #e8b4f8; font-size: 14px; }
+    #online-lounge { color: #e8b4f8; }
+    .online-detail-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 14px;
+      line-height: 1;
+    }
+    .online-detail-emoji {
+      font-size: var(--ui-online-emoji-size);
+      line-height: 1;
+      width: var(--ui-online-emoji-size);
+      height: var(--ui-online-emoji-size);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+    }
+    .online-detail-text,
+    .online-detail-count {
+      font-size: 14px;
+      line-height: 1;
+    }
 
-    /* Settings panel — top right, compact with hover expand */
+    /* Settings panel — top right popover */
     #settings-panel {
       position: absolute;
       top: 8px;
       right: 8px;
+      z-index: 26;
+    }
+    #settings-launchers {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+    #rec-btn,
+    #profile-trigger,
+    #settings-icon {
+      width: var(--ui-icon-frame-size);
+      height: var(--ui-icon-frame-size);
+      padding: 0;
+      border: 1px solid #0f3460;
+      border-radius: var(--ui-icon-radius);
+      background: rgba(42,40,56,0.8);
+      color: #eee;
+      line-height: 1;
       display: flex;
       align-items: center;
-      gap: 0;
+      justify-content: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    #rec-btn:hover,
+    #profile-trigger:hover,
+    #settings-icon:hover { border-color: #f5a623; }
+    #rec-btn:focus-visible,
+    #profile-trigger:focus-visible,
+    #settings-icon:focus-visible {
+      outline: none;
+      border-color: #f5a623;
+    }
+    #rec-btn.recording {
+      border: 2px solid #e83030;
+    }
+    #rec-timer {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      min-width: 68px;
+      font-size: 14px;
+      color: rgba(255,255,255,0.6);
       padding: 4px 8px;
-      background: rgba(42,40,56,0.65);
-      backdrop-filter: blur(4px);
-      -webkit-backdrop-filter: blur(4px);
-      border-radius: 12px;
-      z-index: 12;
-      cursor: default;
-      transition: background 0.3s ease;
-    }
-    #settings-panel:hover, #settings-panel:focus-within { background: rgba(42,40,56,0.85); }
-    #settings-icon { font-size: 16px; line-height: 1; }
-    #settings-detail {
-      display: flex;
-      gap: 4px;
-      align-items: center;
-      overflow: hidden;
-      max-width: 0;
-      opacity: 0;
-      transition: max-width 0.35s ease, opacity 0.25s ease, margin 0.35s ease;
+      border-radius: 10px;
+      font-variant-numeric: tabular-nums;
       white-space: nowrap;
-      margin-left: 0;
     }
-    #settings-panel:hover #settings-detail,
-    #settings-panel:focus-within #settings-detail {
-      max-width: 400px;
-      opacity: 1;
-      margin-left: 8px;
+    #rec-timer::before {
+      content: "";
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #e83030;
+      flex-shrink: 0;
     }
-    #settings-detail #name-input {
+    #rec-timer.visible { display: flex; }
+    #rec-icon {
+      font-size: var(--ui-icon-inner-size);
+      line-height: 1;
+    }
+    #profile-icon {
+      width: var(--ui-icon-inner-size);
+      height: var(--ui-icon-inner-size);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #profile-icon canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      width: var(--ui-icon-inner-size);
+      height: var(--ui-icon-inner-size);
+    }
+    #settings-gear {
+      font-size: var(--ui-icon-inner-size);
+      line-height: 1;
+    }
+    #settings-panel.open #settings-icon {
+      background: rgba(22,33,62,0.95);
+      border-color: #f5a623;
+    }
+    #settings-detail {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      width: min(260px, calc(100vw - 16px));
+      background: rgba(22,33,62,0.95);
+      border: 1px solid #0f3460;
+      border-radius: 12px;
+      padding: 8px;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+    }
+    #settings-panel.open #settings-detail {
+      display: flex;
+    }
+    .settings-section {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #settings-profile-cache {
+      display: none;
+    }
+    #settings-detail #name-input,
+    #settings-detail #tagline-input {
       background: #16213e;
       color: #eee;
       border: 1px solid #0f3460;
@@ -147,13 +331,82 @@
       border-radius: 4px;
       font-family: inherit;
       font-size: 16px;
-      width: 90px;
       -webkit-user-select: text;
       user-select: text;
+      width: 100%;
     }
-    #settings-detail #name-input:focus {
+    #settings-detail #name-input:focus,
+    #settings-detail #tagline-input:focus {
       outline: none;
       border-color: #f5a623;
+    }
+    .settings-field-label {
+      width: 100%;
+      font-size: 12px;
+      color: #8f98b8;
+      line-height: 1.2;
+      margin-top: 2px;
+    }
+    #settings-lang-tags {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    #settings-lang-tags .lang-tag {
+      font-size: 13px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      flex: 1;
+      min-width: 58px;
+      text-align: center;
+    }
+    #settings-time-readonly {
+      background: #16213e;
+      color: #eee;
+      border: 1px solid #0f3460;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 13px;
+      width: 100%;
+      text-align: center;
+    }
+    #settings-detail #music-control {
+      width: 100%;
+      gap: 8px;
+    }
+    #settings-detail #music-toggle {
+      flex: 0 0 auto;
+      font-size: 13px;
+    }
+    #settings-detail #volume-slider {
+      flex: 1;
+      min-width: 110px;
+    }
+    #settings-detail #lang-toggle {
+      width: 100%;
+      font-size: 13px;
+    }
+    #settings-detail #mini-pip-toggle {
+      width: 100%;
+      background: #16213e;
+      color: #7ec8e3;
+      border: 1px solid #0f3460;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-family: inherit;
+      font-weight: bold;
+      transition: border-color 0.2s, color 0.2s, opacity 0.2s;
+    }
+    #settings-detail #mini-pip-toggle:hover:not(:disabled) {
+      border-color: #7ec8e3;
+    }
+    #settings-detail #mini-pip-toggle:disabled {
+      color: #8f98b8;
+      opacity: 0.65;
+      cursor: not-allowed;
     }
 
     /* Action bar — bottom center floating pill */
@@ -190,15 +443,7 @@
       border-color: #f5a623;
     }
     #hint {
-      position: absolute;
-      bottom: 44px;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 16px;
-      color: rgba(255,255,255,0.3);
-      z-index: 12;
-      pointer-events: none;
-      white-space: nowrap;
+      display: none;
     }
 
     /* Joystick */
@@ -241,8 +486,8 @@
     }
     #chat-toggle:hover { background: rgba(107,68,160,0.9); }
     #chat-panel {
-      width: 300px;
-      height: 220px;
+      width: 340px;
+      height: 260px;
       display: flex;
       flex-direction: column;
       background: rgba(22,33,62,0.88);
@@ -257,12 +502,41 @@
       opacity: 0;
       pointer-events: none;
     }
-    #chat-title {
-      padding: 8px 12px;
-      font-size: 16px;
-      font-weight: bold;
-      color: #e8b4f8;
+    #chat-tabs {
+      display: flex;
       border-bottom: 1px solid #0f3460;
+    }
+    .chat-tab {
+      flex: 1;
+      padding: 6px 0;
+      font-size: 13px;
+      font-weight: bold;
+      color: #8a8a9a;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .chat-tab:hover { color: #c8c8d8; }
+    .chat-tab.active {
+      color: #e8b4f8;
+      border-bottom-color: #e8b4f8;
+    }
+    .chat-msg.chat-room { color: #ddd; }
+    .chat-msg.chat-nearby { color: #7ee6a8; }
+    #chat-scope-label {
+      font-size: 12px;
+      font-weight: bold;
+      color: #ddd;
+      padding: 0 6px;
+      display: flex;
+      align-items: center;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+      min-width: 46px;
     }
     #chat-messages {
       flex: 1;
@@ -274,15 +548,18 @@
     #chat-messages::-webkit-scrollbar { width: 4px; }
     #chat-messages::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 4px; }
     .chat-msg { margin-bottom: 4px; word-break: break-word; line-height: 1.4; }
-    .chat-msg .chat-time { color: #666; font-size: 14px; margin-right: 4px; }
-    .chat-msg .chat-name { font-weight: bold; font-size: 14px; }
-    .chat-msg .chat-name::after { content: ":"; color: #666; }
-    .chat-msg .chat-text { color: #ddd; }
+    .chat-msg .chat-name { font-weight: bold; }
     .chat-msg.chat-system {
       color: #777;
       font-size: 14px;
       font-style: italic;
       text-align: center;
+      margin: 4px 0;
+    }
+    .chat-msg.chat-hint {
+      color: #e0943a;
+      font-size: 14px;
+      line-height: 1.4;
       margin: 4px 0;
     }
     .chat-badge {
@@ -295,7 +572,7 @@
       height: 20px;
       line-height: 20px;
       text-align: center;
-      border-radius: 10px;
+      border-radius: 8px;
       margin-left: 4px;
       padding: 0 4px;
       font-style: normal;
@@ -325,6 +602,7 @@
       border-radius: 4px;
       cursor: pointer;
       font-size: 16px;
+      flex-shrink: 0;
     }
     #chat-send:hover { background: #6b44a0; }
 
@@ -678,50 +956,195 @@
       .history-list { max-height: 120px; }
     }
 
-    /* Emoji Picker */
-    #emoji-picker {
+    /* Player Overlap Selector */
+    #player-overlap-selector {
       position: absolute;
-      z-index: 40;
+      z-index: 41;
       display: none;
       flex-direction: column;
-      align-items: center;
-      gap: 4px;
-      padding: 8px 8px;
-      background: rgba(22,33,62,0.92);
+      gap: 2px;
+      padding: 8px;
+      background: rgba(22,33,62,0.94);
       backdrop-filter: blur(6px);
       -webkit-backdrop-filter: blur(6px);
-      border: 1px solid rgba(245,166,35,0.3);
-      border-radius: 12px;
-    }
-    #emoji-picker-name {
-      color: #4DA6FF;
-      font-size: 12px;
-      font-weight: bold;
-      white-space: nowrap;
+      border: none;
+      border-radius: 10px;
+      min-width: 120px;
       max-width: 200px;
+    }
+    #overlap-title {
+      color: #8ab4f8;
+      font-size: 14px;
+      padding: 0 4px 4px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      margin-bottom: 2px;
+    }
+    .overlap-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .overlap-item:hover {
+      background: rgba(245,166,35,0.15);
+    }
+    .overlap-item canvas {
+      width: 22px;
+      height: 22px;
+      image-rendering: pixelated;
+    }
+    .overlap-item span {
+      color: #ddd;
+      font-size: 14px;
+      white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    #emoji-picker-buttons {
+
+    /* Player Card */
+    #player-card {
+      position: absolute;
+      z-index: 40;
+      display: none;
+      animation: playerCardIn 0.16s ease-out;
+    }
+    @keyframes playerCardIn {
+      from { opacity: 0; transform: scale(0.92); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    #player-card-inner {
+      position: relative;
       display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 16px;
+      background: rgba(22,33,62,0.94);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border: none;
+      border-radius: 12px;
+      min-width: 200px;
+      max-width: min(360px, 88vw);
+    }
+    #player-card-arrow {
+      position: absolute;
+      width: 0; height: 0;
+      border-left: 8px solid transparent;
+      border-right: 8px solid transparent;
+      border-top: 8px solid rgba(22,33,62,0.94);
+    }
+    #player-card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #player-card-avatar {
+      width: 40px;
+      height: 40px;
+      image-rendering: pixelated;
+      flex-shrink: 0;
+    }
+    #player-card-header-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    #player-card-name {
+      color: #4DA6FF;
+      font-size: 16px;
+      font-weight: bold;
+      white-space: nowrap;
+    }
+    #player-card-timezone {
+      color: #aaa;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    #player-card-timezone:empty { display: none; }
+    #player-card-languages {
+      display: flex;
+      flex-wrap: wrap;
       gap: 4px;
     }
+    #player-card-languages:empty { display: none; }
+    .player-card-lang-pill {
+      font-size: 13px;
+      color: #b0c4de;
+      background: rgba(77,166,255,0.1);
+      border: 1px solid rgba(77,166,255,0.2);
+      border-radius: 4px;
+      padding: 2px 8px;
+      white-space: nowrap;
+      letter-spacing: 0.3px;
+    }
+    #player-card-tagline {
+      color: #aaa;
+      font-size: 14px;
+      margin-top: 8px;
+      white-space: normal;
+      word-break: break-word;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    #player-card-tagline:empty { display: none; }
+    .player-card-divider {
+      height: 1px;
+      background: rgba(255,255,255,0.1);
+      margin: 8px 0;
+    }
+    #player-card-reactions {
+      display: flex;
+      gap: 4px;
+      justify-content: center;
+    }
+    #player-card-close {
+      display: flex;
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      width: 24px;
+      height: 24px;
+      background: rgba(255,255,255,0.08);
+      border: none;
+      border-radius: 4px;
+      color: #888;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+    }
+    #player-card-close:hover { background: rgba(255,255,255,0.16); color: #ccc; }
+    #player-card-close:active { background: rgba(255,255,255,0.2); }
     .emoji-btn {
-      width: 44px;
-      height: 44px;
-      font-size: 22px;
+      width: var(--ui-icon-frame-size);
+      height: var(--ui-icon-frame-size);
+      min-width: var(--ui-icon-frame-size);
+      min-height: var(--ui-icon-frame-size);
+      font-size: var(--ui-emoji-min-size);
       background: rgba(255,255,255,0.06);
       border: 2px solid transparent;
-      border-radius: 8px;
+      border-radius: var(--ui-icon-radius);
       cursor: pointer;
-      transition: border-color 0.15s, background 0.15s;
+      transition: border-color 0.15s, background 0.15s, transform 0.1s;
       display: flex;
       align-items: center;
       justify-content: center;
+      line-height: 1;
+      padding: 0;
     }
     .emoji-btn:hover {
       border-color: #f5a623;
       background: rgba(245,166,35,0.12);
+      transform: scale(1.12);
+    }
+    .emoji-btn:active {
+      transform: scale(0.95);
     }
 
     /* Reaction notifications */
@@ -789,39 +1212,184 @@
       bottom: 60px;
     }
 
-    /* Character picker grid */
-    .char-picker-label {
-      font-size: 14px;
-      color: #999;
-      margin-bottom: 8px;
+    /* Welcome embedded customizer */
+    .welcome-customizer {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
-    .char-picker-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 48px);
-      gap: 6px;
-      margin-bottom: 12px;
-      justify-content: center;
+    .welcome-customizer .customizer-tabs {
+      flex-wrap: wrap;
     }
-    .char-pick {
-      width: 48px;
-      height: 48px;
+    .welcome-customizer .customizer-options {
+      max-height: none;
+      justify-content: flex-start;
+    }
+    .welcome-customizer .customizer-variants {
+      flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+    /* Presets row (Random + Premade) — horizontal scroll */
+    .customizer-presets {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 4px 0;
+      scrollbar-width: thin;
+      scrollbar-color: #0f3460 transparent;
+    }
+    .customizer-presets::-webkit-scrollbar { height: 4px; }
+    .customizer-presets::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+    .cust-random {
+      min-width: 40px;
+      width: 40px;
+      height: 52px;
       border: 2px solid #0f3460;
-      border-radius: 8px;
+      border-radius: 4px;
       background: #0f1b38;
       cursor: pointer;
-      padding: 2px;
-      transition: border-color 0.2s, background 0.2s;
       display: flex;
       align-items: center;
       justify-content: center;
-      image-rendering: pixelated;
+      font-size: 20px;
+      flex-shrink: 0;
+      transition: border-color 0.2s;
     }
-    .char-pick:hover { border-color: #f5a623; background: #1a2a4e; }
-    .char-pick.selected { border-color: #f5a623; background: #1a2a4e; }
-    .char-pick canvas {
+    .cust-random:hover { border-color: #f5a623; }
+    .cust-premade { flex-shrink: 0; }
+
+    /* Character Customizer overlay */
+    #char-customizer {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 40;
+    }
+    .customizer-inner {
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 16px;
+      padding: 20px;
+      width: 320px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .customizer-preview {
+      display: flex;
+      justify-content: center;
+    }
+    .customizer-preview canvas {
+      width: 64px;
+      height: 128px;
       image-rendering: pixelated;
       image-rendering: crisp-edges;
     }
+    .customizer-tabs {
+      display: flex;
+      gap: 4px;
+      justify-content: center;
+    }
+    .ctab {
+      background: #0f1b38;
+      color: #999;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .ctab:hover { color: #eee; border-color: #f5a623; }
+    .ctab.active { color: #f5a623; border-color: #f5a623; background: #1a2a4e; }
+    .customizer-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      justify-content: center;
+      max-height: 180px;
+      overflow-y: auto;
+      padding: 4px;
+    }
+    .cust-option {
+      width: 36px;
+      height: 36px;
+      border: 2px solid #0f3460;
+      border-radius: 4px;
+      background: #0f1b38;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      color: #ccc;
+      transition: all 0.2s;
+    }
+    .cust-option:hover { border-color: #f5a623; }
+    .cust-option.selected { border-color: #f5a623; background: #1a2a4e; color: #fff; }
+    .cust-premade {
+      width: 40px;
+      height: 52px;
+      padding: 0;
+    }
+    .cust-premade canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    .customizer-variants {
+      display: flex;
+      gap: 4px;
+      justify-content: center;
+      min-height: 28px;
+    }
+    .cust-variant {
+      width: 28px;
+      height: 28px;
+      border: 2px solid #0f3460;
+      border-radius: 50%;
+      background: #0f1b38;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      color: #ccc;
+      transition: all 0.2s;
+    }
+    .cust-variant:hover { border-color: #f5a623; }
+    .cust-variant.selected { border-color: #f5a623; background: #1a2a4e; color: #fff; }
+    .customizer-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+    .customizer-actions button {
+      padding: 4px 20px;
+      border-radius: 8px;
+      border: none;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #customizer-confirm {
+      background: #f5a623;
+      color: #16213e;
+    }
+    #customizer-confirm:hover { background: #ffc04d; }
+    #customizer-cancel {
+      background: #0f1b38;
+      color: #999;
+      border: 1px solid #0f3460;
+    }
+    #customizer-cancel:hover { color: #eee; border-color: #f5a623; }
 
     /* Settings character button */
     #settings-char-btn {
@@ -831,7 +1399,7 @@
       border-radius: 4px;
       background: #16213e;
       cursor: pointer;
-      padding: 1px;
+      padding: 0;
       image-rendering: pixelated;
       transition: border-color 0.2s;
       display: flex;
@@ -842,26 +1410,10 @@
     #settings-char-btn canvas {
       image-rendering: pixelated;
       image-rendering: crisp-edges;
+      width: 24px;
+      height: 24px;
     }
-    /* Settings character picker dropdown */
-    #settings-char-picker {
-      position: absolute;
-      bottom: 100%;
-      right: 0;
-      margin-bottom: 4px;
-      background: rgba(22,33,62,0.95);
-      backdrop-filter: blur(6px);
-      -webkit-backdrop-filter: blur(6px);
-      border: 1px solid #0f3460;
-      border-radius: 8px;
-      padding: 8px;
-      display: none;
-      z-index: 50;
-    }
-    #settings-char-picker.visible { display: block; }
-    #settings-char-picker .char-picker-grid {
-      margin-bottom: 0;
-    }
+    /* (settings char picker removed — uses customizer overlay) */
 
     /* Welcome popup */
     #welcome-popup {
@@ -878,20 +1430,75 @@
       background: #16213e;
       border: 1px solid #0f3460;
       border-radius: 16px;
-      padding: 24px 24px;
-      width: 260px;
-      text-align: center;
+      padding: 24px;
+      width: 640px;
+      max-width: 90vw;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
     }
-    .welcome-greeting {
-      font-size: 32px;
-      margin-bottom: 4px;
+    .welcome-body {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      gap: 24px;
     }
-    .welcome-title {
+    .welcome-left {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .welcome-right {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Preview + dice row */
+    .welcome-preview-area {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .welcome-preview-area .customizer-preview canvas {
+      width: 48px;
+      height: 96px;
+    }
+    .welcome-dice {
+      position: absolute;
+      right: calc(50% + 40px);
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 20px;
+      cursor: pointer;
+      opacity: 0.7;
+      transition: opacity 0.2s;
+    }
+    .welcome-dice:hover { opacity: 1; }
+    /* Info fields */
+    .welcome-fields {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+    .welcome-field {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      text-align: left;
+    }
+    .welcome-field-label {
       font-size: 16px;
-      color: #ccc;
-      margin-bottom: 16px;
+      color: #999;
     }
-    #welcome-name {
+    #welcome-name, #welcome-tagline {
       width: 100%;
       background: #0f1b38;
       color: #eee;
@@ -900,20 +1507,100 @@
       border-radius: 8px;
       font-family: inherit;
       font-size: 16px;
-      text-align: center;
       box-sizing: border-box;
-      margin-bottom: 12px;
       -webkit-user-select: text;
       user-select: text;
     }
-    #welcome-name:focus { outline: none; border-color: #f5a623; }
-    #welcome-name::placeholder { color: #555; }
-    .welcome-hint {
+    #welcome-name:focus, #welcome-tagline:focus { outline: none; border-color: #f5a623; }
+    .input-with-counter {
+      position: relative;
+      width: 100%;
+    }
+    .input-with-counter input { width: 100%; box-sizing: border-box; padding-right: 56px !important; }
+    .char-counter {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 12px;
+      color: #555;
+      pointer-events: none;
+    }
+    .char-counter.at-limit { color: #e74c3c; }
+    .welcome-lang-tags {
+      display: flex;
+      gap: 6px;
+    }
+    .lang-tag {
+      background: #0f1b38;
+      color: #999;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+      padding: 4px 12px;
+      font-family: inherit;
       font-size: 16px;
-      color: #666;
-      margin-bottom: 12px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .lang-tag:hover { color: #eee; border-color: #f5a623; }
+    .lang-tag.selected { color: #f5a623; border-color: #f5a623; background: #1a2a4e; }
+    .welcome-time-display {
+      font-size: 16px;
+      color: #eee;
+    }
+    /* Vertical divider */
+    .welcome-divider {
+      width: 1px;
+      background: rgba(255,255,255,0.08);
+      flex-shrink: 0;
+    }
+    /* Mode tabs (Presets / Custom) */
+    .welcome-mode-tabs {
+      display: flex;
+      gap: 4px;
+    }
+    .welcome-mode-tab {
+      flex: 1;
+      background: #0f1b38;
+      color: #999;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+      padding: 6px 0;
+      font-family: inherit;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .welcome-mode-tab:hover { color: #eee; border-color: #f5a623; }
+    .welcome-mode-tab.active { color: #f5a623; border-color: #f5a623; background: #1a2a4e; }
+    .welcome-left .welcome-customizer {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }
+    /* Presets grid */
+    .welcome-presets-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, 40px);
+      gap: 4px;
+      padding: 4px 0;
+      justify-content: flex-start;
+    }
+    .welcome-presets-grid .cust-random { display: none; }
+    .welcome-presets-grid .cust-premade {
+      align-items: flex-start;
+    }
+    /* Right bottom area (Enter + controls) */
+    .welcome-right-bottom {
+      margin-top: auto;
+      padding-top: 24px;
+      text-align: center;
     }
     #welcome-enter {
+      display: block;
+      width: 100%;
       background: #f5a623;
       color: #fff;
       border: none;
@@ -926,6 +1613,19 @@
       transition: background 0.2s;
     }
     #welcome-enter:hover { background: #d03050; }
+    .welcome-controls {
+      font-size: 12px;
+      color: rgba(255,255,255,0.3);
+      margin-top: 24px;
+      line-height: 1.6;
+      white-space: pre-line;
+      text-align: left;
+    }
+    @media (max-width: 600px) {
+      .welcome-inner { width: 340px; }
+      .welcome-body { flex-direction: column; gap: 12px; }
+      .welcome-divider { width: auto; height: 1px; }
+    }
 
     /* Auto-walk hint */
     #autowalk-hint {
@@ -943,6 +1643,47 @@
       pointer-events: none;
       display: none;
     }
+
+    /* Movement hint (PC first visit) */
+    #move-hint {
+      position: absolute;
+      bottom: 64px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(22,33,62,0.85);
+      color: rgba(255,255,255,0.7);
+      padding: 8px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: bold;
+      letter-spacing: 1.5px;
+      z-index: 25;
+      pointer-events: none;
+      display: none;
+      opacity: 0;
+      transition: opacity 0.5s ease;
+    }
+
+    /* Interact button (mobile only, PC uses E key) */
+    #sit-btn {
+      position: absolute;
+      left: 50%;
+      bottom: 80px;
+      transform: translateX(-50%);
+      z-index: 16;
+      background: rgba(0,0,0,0.45);
+      color: #fff;
+      border: 1.5px solid #fff;
+      padding: 8px 16px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      cursor: pointer;
+      display: none;
+    }
+    #sit-btn:active { background: rgba(255,255,255,0.2); }
 
     /* Mobile portrait layout */
     @media (max-width: 600px) {
@@ -1020,29 +1761,157 @@
         bottom: 60px;
       }
     }
+
+    /* Force landscape: block portrait on mobile */
+    #rotate-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      background: #2a2838;
+      color: #fff;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      font-family: 'MiSans', sans-serif;
+    }
+    #rotate-overlay .rotate-icon {
+      font-size: 48px;
+      animation: rotate-hint 1.5s ease-in-out infinite;
+    }
+    #rotate-overlay .rotate-text {
+      font-size: 16px;
+      opacity: 0.7;
+    }
+    @keyframes rotate-hint {
+      0%, 100% { transform: rotate(0deg); }
+      50% { transform: rotate(90deg); }
+    }
+    @media (max-width: 900px) and (orientation: portrait) {
+      #rotate-overlay { display: flex; }
+    }
   </style>
 </head>
 <body>
+  <div id="rotate-overlay">
+    <div class="rotate-icon">📱</div>
+    <div class="rotate-text">Please rotate your device to landscape</div>
+    <div class="rotate-text" style="font-size:13px;">请横屏使用</div>
+  </div>
   <div id="game-container">
     <canvas id="game"></canvas>
+    <!-- Loading overlay -->
+    <div id="loading-overlay">
+      <div id="loading-inner">
+        <div id="loading-spinner"></div>
+        <div id="loading-text">Loading...</div>
+        <button id="loading-retry" style="display:none;">Refresh</button>
+      </div>
+    </div>
     <div id="welcome-popup">
       <div class="welcome-inner">
-        <div class="welcome-greeting">&#x1F44B;</div>
-        <div class="welcome-title">What would you like to be called?</div>
-        <input id="welcome-name" type="text" placeholder="Your name..." maxlength="12" />
-        <div class="char-picker-label" id="char-picker-label">Choose your look</div>
-        <div class="char-picker-grid" id="welcome-char-grid"></div>
-        <div class="welcome-hint">You can change it anytime in ⚙️</div>
-        <button id="welcome-enter">Enter</button>
+        <div class="welcome-body">
+          <div class="welcome-left">
+            <div class="welcome-preview-area">
+              <div class="welcome-dice" id="welcome-dice">&#x1F3B2;</div>
+              <div class="customizer-preview">
+                <canvas id="welcome-preview-canvas"></canvas>
+              </div>
+            </div>
+            <div class="welcome-mode-tabs">
+              <button class="welcome-mode-tab active" id="welcome-mode-preset" data-mode="preset">Presets</button>
+              <button class="welcome-mode-tab" id="welcome-mode-custom" data-mode="custom">Custom</button>
+            </div>
+            <div class="welcome-customizer" id="welcome-customizer">
+              <div class="customizer-presets welcome-presets-grid" id="welcome-presets"></div>
+              <div class="customizer-tabs" id="welcome-tabs" style="display:none;">
+                <button class="ctab active" data-tab="body">Body</button>
+                <button class="ctab" data-tab="eyes">Eyes</button>
+                <button class="ctab" data-tab="outfit">Outfit</button>
+                <button class="ctab" data-tab="hair">Hair</button>
+                <button class="ctab" data-tab="acc">Acc</button>
+              </div>
+              <div class="customizer-options" id="welcome-options" style="display:none;"></div>
+              <div class="customizer-variants" id="welcome-variants" style="display:none;"></div>
+            </div>
+          </div>
+          <div class="welcome-divider"></div>
+          <div class="welcome-right">
+            <div class="welcome-fields">
+              <div class="welcome-field">
+                <div class="welcome-field-label" id="welcome-name-label">Displayed Name</div>
+                <div class="input-with-counter">
+                  <input id="welcome-name" type="text" />
+                  <span class="char-counter" id="welcome-name-counter">0/20</span>
+                </div>
+              </div>
+              <div class="welcome-field">
+                <div class="welcome-field-label" id="welcome-tagline-label">Bio</div>
+                <div class="input-with-counter">
+                  <input id="welcome-tagline" type="text" />
+                  <span class="char-counter" id="welcome-tagline-counter">0/100</span>
+                </div>
+              </div>
+              <div class="welcome-field">
+                <div class="welcome-field-label" id="welcome-lang-label">I speak</div>
+                <div class="welcome-lang-tags" id="welcome-lang-tags">
+                  <button class="lang-tag" data-lang="en">EN</button>
+                  <button class="lang-tag" data-lang="zh-CN">简中</button>
+                  <button class="lang-tag" data-lang="zh-TW">繁中</button>
+                </div>
+              </div>
+              <div class="welcome-field">
+                <div class="welcome-field-label" id="welcome-tz-label">Timezone</div>
+                <div class="welcome-time-display" id="welcome-time-display"></div>
+              </div>
+            </div>
+            <div class="welcome-right-bottom">
+              <button id="welcome-enter">OK</button>
+              <div id="welcome-auth-links" style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:12px;">
+                <span style="color:rgba(255,255,255,0.3);font-size:14px;" id="welcome-auth-or">or</span>
+                <button id="welcome-login-btn" style="background:none;border:none;color:#7ec8e3;cursor:pointer;font-family:inherit;font-size:14px;font-weight:bold;padding:4px 8px;">Login</button>
+                <button id="welcome-register-btn" style="background:none;border:none;color:#f5a623;cursor:pointer;font-family:inherit;font-size:14px;font-weight:bold;padding:4px 8px;">Register</button>
+              </div>
+              <div class="welcome-controls" id="welcome-controls"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="char-customizer" style="display:none;">
+      <div class="customizer-inner">
+        <div class="customizer-preview">
+          <canvas id="customizer-preview-canvas"></canvas>
+        </div>
+        <div class="customizer-presets" id="overlay-presets"></div>
+        <div class="customizer-tabs">
+          <button class="ctab active" data-tab="body">Body</button>
+          <button class="ctab" data-tab="eyes">Eyes</button>
+          <button class="ctab" data-tab="outfit">Outfit</button>
+          <button class="ctab" data-tab="hair">Hair</button>
+          <button class="ctab" data-tab="acc">Acc</button>
+        </div>
+        <div class="customizer-options" id="customizer-options"></div>
+        <div class="customizer-variants" id="customizer-variants"></div>
+        <div class="customizer-actions">
+          <button id="customizer-confirm">Confirm</button>
+          <button id="customizer-cancel">Cancel</button>
+        </div>
       </div>
     </div>
     <div id="room-label" class="focus">Focus Zone</div>
     <div id="chat-wrap">
       <button id="chat-toggle">Hide</button>
       <div id="chat-panel">
-        <div id="chat-title">Lounge Chat</div>
+        <div id="chat-tabs">
+          <button class="chat-tab active" data-scope="all">All</button>
+          <button class="chat-tab" data-scope="room">Room</button>
+          <button class="chat-tab" data-scope="nearby">Nearby</button>
+        </div>
         <div id="chat-messages"></div>
         <div id="chat-input-bar">
+          <span id="chat-scope-label">Room</span>
           <input id="chat-input" type="text" placeholder="Say something..." maxlength="200" />
           <button id="chat-send">Send</button>
         </div>
@@ -1052,10 +1921,12 @@
       <div class="focus-popup-inner">
         <div class="focus-popup-title">What are you focusing on?</div>
         <div class="focus-category-grid">
-          <button class="focus-cat-btn selected" data-category="studying">📖 Study</button>
-          <button class="focus-cat-btn" data-category="working">💼 Work</button>
-          <button class="focus-cat-btn" data-category="creating">📝 Create</button>
+          <button class="focus-cat-btn selected" data-category="working">💼 Work</button>
+          <button class="focus-cat-btn" data-category="studying">📖 Study</button>
           <button class="focus-cat-btn" data-category="reading">📚 Read</button>
+          <button class="focus-cat-btn" data-category="writing">✏️ Write</button>
+          <button class="focus-cat-btn" data-category="creating">🎨 Create</button>
+          <button class="focus-cat-btn" data-category="exercising">🏋️ Exercise</button>
         </div>
         <input id="focus-task-input" type="text" placeholder="Task name (optional)..." maxlength="50" />
         <div class="focus-popup-actions">
@@ -1090,46 +1961,120 @@
         </div>
       </div>
     </div>
-    <div id="emoji-picker" style="display:none;">
-      <div id="emoji-picker-name"></div>
-      <div id="emoji-picker-buttons">
-        <button class="emoji-btn" data-emoji="👋">👋</button>
-        <button class="emoji-btn" data-emoji="💪">💪</button>
-        <button class="emoji-btn" data-emoji="❤️">❤️</button>
-        <button class="emoji-btn" data-emoji="⭐">⭐</button>
+    <div id="player-overlap-selector" style="display:none;">
+      <div id="overlap-title"></div>
+      <div id="overlap-list"></div>
+    </div>
+    <div id="player-card" style="display:none;">
+      <div id="player-card-inner">
+        <button id="player-card-close">&times;</button>
+        <div id="player-card-header">
+          <canvas id="player-card-avatar" width="32" height="32"></canvas>
+          <div id="player-card-header-text">
+            <div id="player-card-name"></div>
+            <div id="player-card-timezone"></div>
+          </div>
+        </div>
+        <div class="player-card-divider"></div>
+        <div id="player-card-languages"></div>
+        <div id="player-card-tagline"></div>
+        <div class="player-card-divider"></div>
+        <div id="player-card-reactions">
+          <button class="emoji-btn" data-emoji="👋">👋</button>
+          <button class="emoji-btn" data-emoji="💪">💪</button>
+          <button class="emoji-btn" data-emoji="❤️">❤️</button>
+          <button class="emoji-btn" data-emoji="⭐">⭐</button>
+        </div>
       </div>
+      <div id="player-card-arrow"></div>
     </div>
     <div id="reaction-notifications">
       <div id="reaction-list"></div>
     </div>
     <div id="autowalk-hint">Going to rest...</div>
+    <div id="move-hint">WASD / ↑↓←→</div>
+    <div id="auth-popup" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:36;">
+      <div style="background:#16213e;border:1px solid #0f3460;border-radius:12px;padding:24px;width:280px;text-align:center;">
+        <div class="auth-popup-title" style="font-size:16px;font-weight:bold;margin-bottom:16px;color:#eee;">Login</div>
+        <input id="auth-username" type="text" placeholder="Username" autocomplete="username" style="width:100%;background:#0f1b38;color:#eee;border:1px solid #0f3460;padding:8px 12px;border-radius:8px;font-family:inherit;font-size:16px;margin-bottom:8px;box-sizing:border-box;" />
+        <input id="auth-password" type="password" placeholder="Password" autocomplete="current-password" style="width:100%;background:#0f1b38;color:#eee;border:1px solid #0f3460;padding:8px 12px;border-radius:8px;font-family:inherit;font-size:16px;margin-bottom:8px;box-sizing:border-box;" />
+        <div id="auth-error" style="color:#e74c3c;font-size:14px;min-height:20px;margin-bottom:8px;"></div>
+        <div style="display:flex;gap:8px;justify-content:center;">
+          <button id="auth-submit" style="flex:1;background:#f5a623;color:#fff;border:none;padding:8px 20px;border-radius:8px;cursor:pointer;font-family:inherit;font-size:16px;font-weight:bold;">Submit</button>
+          <button id="auth-back" style="flex:1;background:#0f3460;color:#eee;border:none;padding:8px 20px;border-radius:8px;cursor:pointer;font-family:inherit;font-size:16px;font-weight:bold;">Back</button>
+        </div>
+      </div>
+    </div>
+    <button id="sit-btn" style="display:none;">Sit</button>
     <div id="joystick-zone"><canvas id="joystick-canvas" width="130" height="130"></canvas></div>
     <div id="hint"></div>
     <div id="info-panel">
-      <span id="online-total">🟢 1</span>
+      <span id="online-total">
+        <span id="online-status-icon" aria-hidden="true">
+          <span id="online-status-emoji">🟢</span>
+        </span>
+        <span id="online-count">1</span>
+      </span>
       <span id="online-detail">
         <span id="online-sep">┊</span>
-        <span id="online-focus">📖 Focus 0</span>
+        <span id="online-focus" class="online-detail-item">
+          <span class="online-detail-emoji" aria-hidden="true">📖</span>
+          <span class="online-detail-text">Focus:</span>
+          <span class="online-detail-count">0</span>
+        </span>
         <span id="online-dot">·</span>
-        <span id="online-lounge">☕ Lounge 0</span>
+        <span id="online-lounge" class="online-detail-item">
+          <span class="online-detail-emoji" aria-hidden="true">☕</span>
+          <span class="online-detail-text">Lounge:</span>
+          <span class="online-detail-count">0</span>
+        </span>
       </span>
     </div>
     <div id="settings-panel">
-      <span id="settings-icon">⚙️</span>
-      <span id="settings-detail">
-        <div id="settings-char-wrap" style="position:relative;">
+      <div id="settings-launchers">
+        <span id="rec-timer"></span>
+        <button id="rec-btn" type="button" aria-label="Record timelapse" title="Record timelapse">
+          <span id="rec-icon" aria-hidden="true">📹</span>
+        </button>
+        <button id="profile-trigger" type="button" aria-label="Profile">
+          <span id="profile-icon" aria-hidden="true"></span>
+        </button>
+        <button id="settings-icon" type="button" aria-label="Settings">
+          <span id="settings-gear" aria-hidden="true">⚙️</span>
+        </button>
+      </div>
+      <div id="settings-detail">
+        <div id="settings-auth-section" class="settings-section" style="border-bottom:1px solid #0f3460;padding-bottom:8px;margin-bottom:4px;"></div>
+        <div id="settings-section-system" class="settings-section">
+          <div id="music-control">
+            <button id="music-toggle">Sound: OFF</button>
+            <input id="volume-slider" type="range" min="0" max="100" value="30" />
+          </div>
+          <button id="lang-toggle">🌐 EN</button>
+          <button id="mini-pip-toggle" type="button">Mini Window</button>
+        </div>
+        <div id="settings-profile-cache" aria-hidden="true">
           <button id="settings-char-btn" title="Change character"></button>
-          <div id="settings-char-picker">
-            <div class="char-picker-grid" id="settings-char-grid"></div>
+          <div class="input-with-counter">
+            <input id="name-input" type="text" />
+            <span class="char-counter" id="name-input-counter">0/20</span>
+          </div>
+          <div class="input-with-counter">
+            <input id="tagline-input" type="text" />
+            <span class="char-counter" id="tagline-input-counter">0/100</span>
+          </div>
+          <div class="settings-field-label" id="settings-profile-lang-label">I speak</div>
+          <div id="settings-lang-tags">
+            <button type="button" class="lang-tag" data-lang="en">EN</button>
+            <button type="button" class="lang-tag" data-lang="zh-CN">简中</button>
+            <button type="button" class="lang-tag" data-lang="zh-TW">繁中</button>
+          </div>
+          <div class="settings-field-label" id="settings-time-label">Timezone</div>
+          <div id="settings-time-readonly" aria-live="polite">
+            <span id="settings-time-display"></span>
           </div>
         </div>
-        <input id="name-input" type="text" placeholder="Your name..." maxlength="12" />
-        <div id="music-control">
-          <button id="music-toggle">Sound: OFF</button>
-          <input id="volume-slider" type="range" min="0" max="100" value="30" />
-        </div>
-        <button id="lang-toggle">EN</button>
-      </span>
+      </div>
     </div>
     <div id="action-bar">
       <select id="status-select">
@@ -1149,7 +2094,7 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/js/game.js"></script>
+  <script src="/js/game.js?v=7"></script>
   <script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js');

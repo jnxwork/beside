@@ -1,0 +1,14 @@
+{ "columns":6,
+ "image":"..\/assets\/modernexteriors-win\/Modern_Exteriors_32x32\/Animated_32x32\/Animated_sheets_32x32\/Campfire_32x32.png",
+ "imageheight":64,
+ "imagewidth":192,
+ "margin":0,
+ "name":"Campfire_32x32",
+ "spacing":0,
+ "tilecount":6,
+ "tiledversion":"1.11.2",
+ "tileheight":64,
+ "tilewidth":32,
+ "type":"tileset",
+ "version":"1.10"
+}

@@ -1,9 +1,10 @@
 {
-  "name": "Stay Together",
-  "short_name": "Stay Together",
+  "name": "Beside",
+  "short_name": "Beside",
   "description": "Multiplayer co-studying virtual space",
   "start_url": "/",
   "display": "standalone",
+  "orientation": "landscape",
   "background_color": "#2a2838",
   "theme_color": "#2a2838",
   "icons": [

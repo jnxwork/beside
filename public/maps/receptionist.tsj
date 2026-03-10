@@ -1,0 +1,14 @@
+{ "columns":7,
+ "image":"..\/assets\/moderninteriors-win\/3_Animated_objects\/32x32\/spritesheets\/animated_receptionist_2_32x32.png",
+ "imageheight":64,
+ "imagewidth":224,
+ "margin":0,
+ "name":"receptionist",
+ "spacing":0,
+ "tilecount":7,
+ "tiledversion":"1.11.2",
+ "tileheight":64,
+ "tilewidth":32,
+ "type":"tileset",
+ "version":"1.10"
+}

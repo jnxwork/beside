@@ -1,0 +1,14 @@
+{ "columns":14,
+ "image":"..\/assets\/modernexteriors-win\/Modern_Exteriors_32x32\/Animated_32x32\/Animated_sheets_32x32\/Fishes_3_32x32.png",
+ "imageheight":32,
+ "imagewidth":448,
+ "margin":0,
+ "name":"Fishes_3_32x32",
+ "spacing":0,
+ "tilecount":14,
+ "tiledversion":"1.11.2",
+ "tileheight":32,
+ "tilewidth":32,
+ "type":"tileset",
+ "version":"1.10"
+}

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'stay-together-v1';
+const CACHE_NAME = 'beside-v8';
 const PRECACHE = [
   '/',
   '/js/game.js',

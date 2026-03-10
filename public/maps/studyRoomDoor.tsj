@@ -1,0 +1,14 @@
+{ "columns":5,
+ "image":"..\/assets\/moderninteriors-win\/3_Animated_objects\/32x32\/spritesheets\/animated_door_big_1_32x32.png",
+ "imageheight":96,
+ "imagewidth":160,
+ "margin":0,
+ "name":"studyRoomDoor",
+ "spacing":0,
+ "tilecount":5,
+ "tiledversion":"1.11.2",
+ "tileheight":96,
+ "tilewidth":32,
+ "type":"tileset",
+ "version":"1.10"
+}

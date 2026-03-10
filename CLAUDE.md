@@ -1,4 +1,6 @@
-# Stay Together - 多人在线陪伴空间
+# Beside - 多人在线陪伴空间
+
+> **写代码前必读 [DESIGN.md](DESIGN.md)**：所有 UI 数值、配色、间距、动画参数、音频参数以此为准，不要凭记忆猜测。
 
 ## 技术栈
 Express + Socket.IO + HTML5 Canvas (无框架)
@@ -37,7 +39,7 @@ npm start (端口 3000)
 - 服务端同步: 其他玩家也能看到礼物堆
 
 ## 猫咪系统
-- 服务端AI: 独立行为，状态机(sit/sleep/wander/curious/groom/stretch/yawn/gift_deliver)
+- 服务端AI: 独立行为，状态机(sit/sleep/wander/curious/groom/stretch/yawn/gift_deliver/zoomies/leg_rub/stare)
 - 时间感知: 夜晚多睡觉，早晨多伸懒腰
 - 人数感知: 房间人越多越活跃
 - 好奇心: 新玩家进入房间会凑过去看
@@ -48,6 +50,10 @@ npm start (端口 3000)
 - 跟随: 房间没人时会跟着玩家换房间
 - 点击互动: 醒着→飘一颗红心+"Miu~"文字+咕噜声，睡着→只摇尾巴
 - 聊天反应: Lounge有人聊天时耳朵竖起来(!)
+- 发疯跑(zoomies): 3%概率突然高速跑3-4个随机点，跑完坐下喘气
+- 蹭腿(leg_rub): 静止5s+的近距离玩家，10%概率围绕其椭圆路径蹭一圈，飘小红心
+- 篝火取暖: 房间有亮篝火时20%概率走过去坐下，更容易睡着(+30%)
+- 对空气发呆(stare): 8%概率进入look动画+"..."气泡，持续10-20s
 
 ## i18n 国际化
 - 支持英文(en)和中文(zh)
@@ -66,7 +72,7 @@ npm start (端口 3000)
 - getInitialSpawn()/getPortalSpawn()验证出生点不在家具上(isSpawnSafe)
 
 ## 部署
-- GitHub: https://github.com/jnxwork/stay-together.git
+- GitHub: https://github.com/jnxwork/beside.git
 - 可部署到 Render.com (免费)
 - 临时分享: cloudflared tunnel --url http://localhost:3000 --protocol http2
 

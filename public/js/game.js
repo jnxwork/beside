@@ -1,17 +1,126 @@
 // ============================================================
-// Stay Together - Multiplayer co-studying space
+// Beside - Multiplayer co-studying space
 // Two rooms: Focus Zone (quiet) & Lounge (chat + music)
 // ============================================================
 
 const canvas = document.getElementById("game");
 let ctx = canvas.getContext("2d");
 const mainCtx = ctx;
-const socket = io();
+// Session persistence: survive tab sleep / reconnect
+function getSessionToken() {
+  let token = localStorage.getItem("sessionToken");
+  if (!token) { token = crypto.randomUUID(); localStorage.setItem("sessionToken", token); }
+  return token;
+}
+
+// Auth state
+let authToken = localStorage.getItem("authToken") || null;
+let authUsername = localStorage.getItem("authUsername") || null;
+let isRegistered = !!authToken;
+
+function buildSocketAuth() {
+  const auth = { sessionToken: getSessionToken() };
+  if (authToken) auth.authToken = authToken;
+  return auth;
+}
+
+let socket = io({ auth: buildSocketAuth() });
+
+// Auth API helpers
+async function apiRegister(username, password, profileData) {
+  const body = { username, password, ...profileData };
+  const res = await fetch("/api/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res.json().then(data => ({ ok: res.ok, status: res.status, ...data }));
+}
+
+async function apiLogin(username, password) {
+  const res = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  return res.json().then(data => ({ ok: res.ok, status: res.status, ...data }));
+}
+
+async function apiLogout() {
+  if (!authToken) return;
+  fetch("/api/logout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: authToken }),
+  }).catch(() => {});
+}
+
+function handleAuthSuccess(token, username, profile) {
+  authToken = token;
+  authUsername = username;
+  isRegistered = true;
+  localStorage.setItem("authToken", token);
+  localStorage.setItem("authUsername", username);
+  // Apply profile from server if provided
+  if (profile) {
+    if (profile.name) {
+      if (localPlayer) localPlayer.name = profile.name;
+      localStorage.setItem("playerName", profile.name);
+    }
+    if (profile.character) {
+      if (localPlayer) localPlayer.character = profile.character;
+      selectedCharConfig = profile.character;
+      localStorage.setItem("selectedCharacter", JSON.stringify(profile.character));
+    }
+    if (profile.tagline !== undefined) {
+      if (localPlayer) localPlayer.tagline = profile.tagline;
+      localStorage.setItem("playerTagline", profile.tagline);
+    }
+    if (profile.languages) {
+      if (localPlayer) localPlayer.languages = profile.languages;
+      localStorage.setItem("playerLanguages", JSON.stringify(profile.languages));
+    }
+  }
+  // Reconnect socket with authToken
+  socket.auth = buildSocketAuth();
+  socket.disconnect().connect();
+  updateAuthUI();
+}
+
+function handleLogout() {
+  apiLogout();
+  authToken = null;
+  authUsername = null;
+  isRegistered = false;
+  localStorage.removeItem("authToken");
+  localStorage.removeItem("authUsername");
+  updateAuthUI();
+}
+
+// --- Loading state ---
+let gameReady = false;
+const _loadingOverlay = document.getElementById("loading-overlay");
+const _loadingRetryBtn = document.getElementById("loading-retry");
+const _loadingTimeout = setTimeout(() => {
+  if (!gameReady && _loadingRetryBtn) _loadingRetryBtn.style.display = "block";
+}, 5000);
+if (_loadingRetryBtn) _loadingRetryBtn.addEventListener("click", () => location.reload());
+
+function dismissLoadingOverlay() {
+  if (!_loadingOverlay) return;
+  clearTimeout(_loadingTimeout);
+  _loadingOverlay.classList.add("fade-out");
+  setTimeout(() => _loadingOverlay.classList.add("hidden"), 500);
+}
 
 // ============================================================
 // TOUCH / RESPONSIVE + CAMERA
 // ============================================================
 const isTouchDevice = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+// Lock to landscape on mobile if supported
+if (isTouchDevice && screen.orientation && screen.orientation.lock) {
+  screen.orientation.lock("landscape").catch(() => {});
+}
 const TILE = 32;
 
 // Per-room dimensions (defaults, overwritten by server/Tiled data)
@@ -35,13 +144,21 @@ function resizeCanvas() {
   dpr = window.devicePixelRatio || 1;
   const w = window.innerWidth;
   const h = window.innerHeight;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
-  canvas.style.width = w + "px";
-  canvas.style.height = h + "px";
-  // Scale so the game world always covers the viewport (fill, not fit)
+  const nw = w * dpr;
+  const nh = h * dpr;
+  // Only resize if dimensions actually changed (setting canvas.width clears content → flicker)
+  if (canvas.width !== nw || canvas.height !== nh) {
+    canvas.width = nw;
+    canvas.height = nh;
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
+  }
   gameScale = Math.max(w / getGameW(), h / getGameH());
+  if (isTouchDevice) gameScale = Math.max(gameScale, MIN_SCALE_MOBILE);
 }
+
+// Mobile: minimum zoom so characters/tiles are clearly visible
+const MIN_SCALE_MOBILE = 1.2;
 
 function updateCamera() {
   if (!localPlayer) return;
@@ -51,6 +168,7 @@ function updateCamera() {
   const w = canvas.width / dpr;
   const h = canvas.height / dpr;
   gameScale = Math.max(w / gw, h / gh);
+  if (isTouchDevice) gameScale = Math.max(gameScale, MIN_SCALE_MOBILE);
   const viewW = w / gameScale;
   const viewH = h / gameScale;
   if (viewW >= gw) {
@@ -89,15 +207,17 @@ const TRANSLATIONS = {
   en: {
     focusZone: "Focus Zone",
     lounge: "Lounge",
-    portalToLounge: "Lounge \u2192",
-    portalToFocus: "\u2190 Focus Zone",
+    portalToLounge: "\u2B07 Lounge",
+    portalToFocus: "\u2B06 Focus Zone",
     startFocus: "Start Focus",
     endFocus: "End Focus",
     focusPopupTitle: "What are you focusing on?",
-    catStudying: "\u{1F4D6} Study",
     catWorking: "\u{1F4BC} Work",
-    catCreating: "\u{1F4DD} Create",
+    catStudying: "\u{1F4D6} Study",
     catReading: "\u{1F4DA} Read",
+    catWriting: "\u{270F}\u{FE0F} Write",
+    catCreating: "\u{1F3A8} Create",
+    catExercising: "\u{1F3CB}\u{FE0F} Exercise",
     taskPlaceholder: "Task name (optional)...",
     start: "Start",
     cancel: "Cancel",
@@ -106,15 +226,23 @@ const TRANSLATIONS = {
     portalConfirmNo: "Keep focusing",
     goingToRest: "Going to rest...",
     namePlaceholder: "Your name...",
-    chatTitle: "Lounge Chat",
+    chatAll: "All",
+    chatRoom: "Room",
+    chatNearby: "Nearby",
+    system: "System",
+    nearbyHint: "Messages sent in [Nearby] can only be seen by players within 4 tiles of you, including your own. Others won't see anything. Vice versa.",
     chatPlaceholder: "Say something...",
     send: "Send",
     hide: "Hide",
     chat: "Chat",
     soundOff: "Sound: OFF",
     soundOn: "Sound: ON",
-    hint: "Arrow keys / WASD to move | Walk to the portal to switch rooms",
-    hintMobile: "Use joystick to move | Walk to the portal to switch rooms",
+    hint: "WASD to move | E to interact | Walk to the stairs to switch rooms",
+    hintMobile: "Use joystick to move | Walk to the stairs to switch rooms",
+    welcomeControls: "Your info above is visible to others.\nYou can change it anytime in \u2699\uFE0F",
+    welcomeControlsMobile: "Your info above is visible to others.\nYou can change it anytime in \u2699\uFE0F",
+    presetTab: "Presets",
+    customTab: "Custom",
     online: "Online",
     total: "Total",
     // Status labels
@@ -132,13 +260,12 @@ const TRANSLATIONS = {
     wandering: "Wandering",
     daydreaming: "Daydreaming",
     grabCoffee: "Going to grab some coffee...",
-    checkingIn: "Checking in...",
     joinedLounge: "joined the Lounge",
     leftLounge: "left",
     welcomeTitle: "What would you like to be called?",
     welcomeHint: "You can change it anytime in \u2699\uFE0F",
-    welcomeEnter: "Enter",
-    lang: "\u{4E2D}\u6587",
+    welcomeEnter: "OK",
+    lang: "🌐 EN",
     historyTitle: "Focus History",
     historyToday: "Today",
     historySessions: "sessions",
@@ -152,19 +279,83 @@ const TRANSLATIONS = {
     reactedTo: "You sent",
     reactedToSuffix: "",
     chooseCharacter: "Choose your look",
+    sit: "Sit",
+    stand: "Stand",
+    taglinePlaceholder: "",
+    displayedNameLabel: "Displayed Name",
+    taglineLabel: "Bio (optional)",
+    profileTab: "Profile",
+    systemTab: "Settings",
+    profileEntry: "Edit Profile",
+    langLabel: "Language",
+    profileLangLabel: "Language",
+    uiLangLabel: "Interface Language",
+    timezoneLabel: "Timezone",
+    timeLateNight: "Late Night (0:00-5:00)",
+    timeMorning: "Morning (5:00-8:00)",
+    timeForenoon: "Forenoon (8:00-11:00)",
+    timeNoon: "Noon (11:00-13:00)",
+    timeAfternoon: "Afternoon (13:00-17:00)",
+    timeDusk: "Dusk (17:00-19:00)",
+    timeNight: "Night (19:00-24:00)",
+    miniOpen: "Mini Window",
+    miniClose: "Close Mini",
+    miniUnsupported: "Mini not supported",
+    miniTitle: "Live Status",
+    miniOnlineTotal: "Online",
+    miniOnlineFocus: "Focus",
+    miniOnlineLounge: "Lounge",
+    miniYou: "You",
+    miniRoom: "Room",
+    miniFocusState: "Focus",
+    miniFocusing: "Focusing",
+    miniNotFocusing: "Not focusing",
+    miniTimer: "Timer",
+    miniTask: "Task",
+    miniCat: "Cat",
+    miniDisconnected: "Disconnected",
+    miniCatUnknown: "Unknown",
+    miniShowLabel: "Show",
+    miniShowState: "State",
+    miniShowTimer: "Timer",
+    miniShowMap: "Map",
+    selectPlayer: "Who do you want to interact with?",
+    clickToInteract: "Click to interact",
+    recStart: "Record timelapse",
+    recStop: "Stop recording",
+    recEncoding: "Encoding {0}%...",
+    recUnsupported: "Your browser doesn't support video recording.\nPlease try Chrome, Edge, or Firefox.",
+    authLogin: "Login",
+    authRegister: "Register",
+    authLogout: "Logout",
+    authUsername: "Username",
+    authPassword: "Password",
+    authSubmit: "Submit",
+    authBack: "Back",
+    authOr: "or",
+    authGuest: "Enter as Guest",
+    authLoggedInAs: "Logged in as",
+    authErrRequired: "Username and password required.",
+    authErrShortUser: "Username must be 3-20 characters (letters, numbers, underscore).",
+    authErrShortPass: "Password must be at least 6 characters.",
+    authErrNetwork: "Network error. Please try again.",
+    chatRateLimit: "Just a moment",
+    reactionRateLimit: "Your wave was sent!",
   },
   zh: {
     focusZone: "\u4E13\u6CE8\u533A",
     lounge: "\u4F11\u95F2\u533A",
-    portalToLounge: "\u4F11\u95F2\u533A \u2192",
-    portalToFocus: "\u2190 \u4E13\u6CE8\u533A",
+    portalToLounge: "\u2B07 \u4F11\u95F2\u533A",
+    portalToFocus: "\u2B06 \u4E13\u6CE8\u533A",
     startFocus: "\u5F00\u59CB\u4E13\u6CE8",
     endFocus: "\u7ED3\u675F\u4E13\u6CE8",
     focusPopupTitle: "\u4F60\u8981\u4E13\u6CE8\u505A\u4EC0\u4E48\uFF1F",
-    catStudying: "\u{1F4D6} \u5B66\u4E60",
     catWorking: "\u{1F4BC} \u5DE5\u4F5C",
-    catCreating: "\u{1F4DD} \u521B\u4F5C",
+    catStudying: "\u{1F4D6} \u5B66\u4E60",
     catReading: "\u{1F4DA} \u9605\u8BFB",
+    catWriting: "\u{270F}\u{FE0F} \u5199\u4F5C",
+    catCreating: "\u{1F3A8} \u521B\u4F5C",
+    catExercising: "\u{1F3CB}\u{FE0F} \u953B\u70BC",
     taskPlaceholder: "\u4EFB\u52A1\u540D\u79F0\uFF08\u53EF\u9009\uFF09...",
     start: "\u5F00\u59CB",
     cancel: "\u53D6\u6D88",
@@ -173,15 +364,23 @@ const TRANSLATIONS = {
     portalConfirmNo: "\u7EE7\u7EED\u4E13\u6CE8",
     goingToRest: "\u53BB\u4F11\u606F\u4E00\u4E0B...",
     namePlaceholder: "\u4F60\u7684\u540D\u5B57...",
-    chatTitle: "\u4F11\u95F2\u533A\u804A\u5929",
+    chatAll: "\u5168\u90E8",
+    chatRoom: "\u623F\u95F4",
+    chatNearby: "\u9644\u8FD1",
+    system: "\u7CFB\u7EDF",
+    nearbyHint: "\u5728[\u9644\u8FD1]\u9891\u9053\u53D1\u8A00\u65F6\uFF0C\u53EA\u6709\u4F60\u5468\u56F4 4 \u683C\u5185\u7684\u73A9\u5BB6\uFF08\u542B\u81EA\u8EAB\u6240\u5728\u683C\uFF09\u80FD\u770B\u5230\u6D88\u606F\u5185\u5BB9\uFF0C\u5176\u4ED6\u4EBA\u4E0D\u4F1A\u770B\u5230\u4EFB\u4F55\u63D0\u793A\u3002\u53CD\u4E4B\u4EA6\u7136\u3002",
     chatPlaceholder: "\u8BF4\u70B9\u4EC0\u4E48...",
     send: "\u53D1\u9001",
     hide: "\u6536\u8D77",
     chat: "\u804A\u5929",
     soundOff: "\u58F0\u97F3: \u5173",
     soundOn: "\u58F0\u97F3: \u5F00",
-    hint: "\u65B9\u5411\u952E / WASD \u79FB\u52A8 | \u8D70\u5230\u4F20\u9001\u95E8\u5207\u6362\u623F\u95F4",
-    hintMobile: "\u6447\u6746\u79FB\u52A8 | \u8D70\u5230\u4F20\u9001\u95E8\u5207\u6362\u623F\u95F4",
+    hint: "WASD \u79FB\u52A8 | E \u4EA4\u4E92 | \u8D70\u5230\u697C\u68AF\u5207\u6362\u623F\u95F4",
+    hintMobile: "\u6447\u6746\u79FB\u52A8 | \u8D70\u5230\u697C\u68AF\u5207\u6362\u623F\u95F4",
+    welcomeControls: "\u4EE5\u4E0A\u4FE1\u606F\u5BF9\u5176\u4ED6\u4EBA\u53EF\u89C1\u3002\n\u53EF\u4EE5\u968F\u65F6\u5728 \u2699\uFE0F \u4E2D\u4FEE\u6539",
+    welcomeControlsMobile: "\u4EE5\u4E0A\u4FE1\u606F\u5BF9\u5176\u4ED6\u4EBA\u53EF\u89C1\u3002\n\u53EF\u4EE5\u968F\u65F6\u5728 \u2699\uFE0F \u4E2D\u4FEE\u6539",
+    presetTab: "\u9884\u8BBE",
+    customTab: "\u81EA\u5B9A\u4E49",
     online: "\u5728\u7EBF",
     total: "\u603B\u8BA1",
     studying: "\u5B66\u4E60\u4E2D",
@@ -198,13 +397,12 @@ const TRANSLATIONS = {
     wandering: "\u95F2\u901B\u4E2D",
     daydreaming: "\u53D1\u5446\u4E2D",
     grabCoffee: "\u53BB\u559D\u676F\u5496\u5561...",
-    checkingIn: "\u7B7E\u5230\u4E2D...",
     joinedLounge: "\u52A0\u5165\u4E86\u4F11\u95F2\u533A",
     leftLounge: "\u79BB\u5F00\u4E86",
     welcomeTitle: "\u4F60\u60F3\u88AB\u600E\u4E48\u79F0\u547C\uFF1F",
     welcomeHint: "\u53EF\u4EE5\u968F\u65F6\u5728\u53F3\u4E0A\u89D2 \u2699\uFE0F \u4E2D\u4FEE\u6539",
-    welcomeEnter: "\u8FDB\u5165",
-    lang: "EN",
+    welcomeEnter: "\u786E\u8BA4",
+    lang: "🌐 简",
     historyTitle: "\u4E13\u6CE8\u8BB0\u5F55",
     historyToday: "\u4ECA\u5929",
     historySessions: "\u6B21",
@@ -218,6 +416,68 @@ const TRANSLATIONS = {
     reactedTo: "\u4F60\u5BF9",
     reactedToSuffix: "\u53D1\u9001\u4E86",
     chooseCharacter: "\u9009\u62E9\u89D2\u8272",
+    sit: "\u5750\u4E0B",
+    stand: "\u8D77\u6765",
+    taglinePlaceholder: "",
+    displayedNameLabel: "\u663E\u793A\u540D\u79F0",
+    taglineLabel: "\u7B80\u4ECB\uFF08\u9009\u586B\uFF09",
+    profileTab: "\u8D44\u6599",
+    systemTab: "\u8BBE\u7F6E",
+    profileEntry: "\u7F16\u8F91\u8D44\u6599",
+    langLabel: "\u8BED\u8A00",
+    profileLangLabel: "\u8BED\u8A00",
+    uiLangLabel: "\u754C\u9762\u8BED\u8A00",
+    timezoneLabel: "\u65F6\u533A",
+    timeLateNight: "\u51CC\u6668 (0:00-5:00)",
+    timeMorning: "\u65E9\u6668 (5:00-8:00)",
+    timeForenoon: "\u4E0A\u5348 (8:00-11:00)",
+    timeNoon: "\u4E2D\u5348 (11:00-13:00)",
+    timeAfternoon: "\u4E0B\u5348 (13:00-17:00)",
+    timeDusk: "\u508D\u665A (17:00-19:00)",
+    timeNight: "\u591C\u665A (19:00-24:00)",
+    miniOpen: "Mini \u5C0F\u7A97",
+    miniClose: "\u5173\u95ED\u5C0F\u7A97",
+    miniUnsupported: "\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u5C0F\u7A97",
+    miniTitle: "\u5B9E\u65F6\u72B6\u6001",
+    miniOnlineTotal: "\u5728\u7EBF",
+    miniOnlineFocus: "\u4E13\u6CE8\u533A",
+    miniOnlineLounge: "\u4F11\u95F2\u533A",
+    miniYou: "\u4F60",
+    miniRoom: "\u623F\u95F4",
+    miniFocusState: "\u4E13\u6CE8",
+    miniFocusing: "\u4E13\u6CE8\u4E2D",
+    miniNotFocusing: "\u672A\u4E13\u6CE8",
+    miniTimer: "\u8BA1\u65F6",
+    miniTask: "\u4EFB\u52A1",
+    miniCat: "\u732B\u54AA",
+    miniDisconnected: "\u5DF2\u65AD\u5F00",
+    miniCatUnknown: "\u672A\u77E5",
+    miniShowLabel: "\u663E\u793A",
+    miniShowState: "\u72B6\u6001",
+    miniShowTimer: "\u8BA1\u65F6",
+    miniShowMap: "\u5730\u56FE",
+    selectPlayer: "\u4F60\u60F3\u548C\u8C01\u4E92\u52A8\uFF1F",
+    clickToInteract: "\u70B9\u51FB\u4E92\u52A8",
+    recStart: "\u5F55\u5236\u7F29\u65F6",
+    recStop: "\u505C\u6B62\u5F55\u5236",
+    recEncoding: "\u7F16\u7801\u4E2D {0}%...",
+    recUnsupported: "\u4F60\u7684\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u89C6\u9891\u5F55\u5236\uFF0C\u8BF7\u5C1D\u8BD5\u4F7F\u7528 Chrome\u3001Edge \u6216 Firefox\u3002",
+    authLogin: "\u767B\u5F55",
+    authRegister: "\u6CE8\u518C",
+    authLogout: "\u9000\u51FA",
+    authUsername: "\u7528\u6237\u540D",
+    authPassword: "\u5BC6\u7801",
+    authSubmit: "\u63D0\u4EA4",
+    authBack: "\u8FD4\u56DE",
+    authOr: "\u6216",
+    authGuest: "\u6E38\u5BA2\u8FDB\u5165",
+    authLoggedInAs: "\u5DF2\u767B\u5F55",
+    authErrRequired: "\u7528\u6237\u540D\u548C\u5BC6\u7801\u4E0D\u80FD\u4E3A\u7A7A\u3002",
+    authErrShortUser: "\u7528\u6237\u540D\u987B\u4E3A3-20\u4E2A\u5B57\u7B26\uFF08\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u4E0B\u5212\u7EBF\uFF09\u3002",
+    authErrShortPass: "\u5BC6\u7801\u81F3\u5C116\u4E2A\u5B57\u7B26\u3002",
+    authErrNetwork: "\u7F51\u7EDC\u9519\u8BEF\uFF0C\u8BF7\u91CD\u8BD5\u3002",
+    chatRateLimit: "\u7A0D\u7B49\u4E00\u4E0B~",
+    reactionRateLimit: "\u4F60\u7684\u95EE\u5019\u5DF2\u9001\u8FBE~",
   },
 };
 
@@ -241,17 +501,39 @@ function toggleLanguage() {
 function applyLanguage() {
   // Static HTML elements
   document.getElementById("lang-toggle").textContent = t("lang");
-  document.getElementById("name-input").placeholder = t("namePlaceholder");
+  const profileTrigger = document.getElementById("profile-trigger");
+  if (profileTrigger) {
+    profileTrigger.title = t("profileTab");
+    profileTrigger.setAttribute("aria-label", t("profileTab"));
+  }
+  const settingsTrigger = document.getElementById("settings-icon");
+  if (settingsTrigger) {
+    settingsTrigger.title = t("systemTab");
+    settingsTrigger.setAttribute("aria-label", t("systemTab"));
+  }
+  const spl = document.getElementById("settings-profile-lang-label");
+  if (spl) spl.textContent = t("profileLangLabel");
+  const stl = document.getElementById("settings-time-label");
+  if (stl) stl.textContent = t("timezoneLabel");
+
+  const miniBtn = document.getElementById("mini-pip-toggle");
+  if (miniBtn) miniBtn.setAttribute("aria-label", t("miniOpen"));
   document.getElementById("chat-input").placeholder = t("chatPlaceholder");
   document.getElementById("chat-send").textContent = t("send");
-  document.getElementById("chat-title").textContent = t("chatTitle");
+  document.querySelectorAll(".chat-tab").forEach(btn => {
+    const scope = btn.dataset.scope;
+    if (scope === "all") btn.textContent = t("chatAll");
+    else if (scope === "room") btn.textContent = t("chatRoom");
+    else if (scope === "nearby") btn.textContent = t("chatNearby");
+  });
+  if (typeof updateScopeLabel === "function") updateScopeLabel();
   document.getElementById("music-toggle").textContent = t("soundOff");
   document.getElementById("hint").textContent = t(isTouchDevice ? "hintMobile" : "hint");
 
   // Focus popup
   document.querySelector(".focus-popup-title").textContent = t("focusPopupTitle");
   const catBtns = document.querySelectorAll(".focus-cat-btn");
-  const catKeys = ["catStudying", "catWorking", "catCreating", "catReading"];
+  const catKeys = ["catWorking", "catStudying", "catReading", "catWriting", "catCreating", "catExercising"];
   catBtns.forEach((btn, i) => { btn.textContent = t(catKeys[i]); });
   document.getElementById("focus-task-input").placeholder = t("taskPlaceholder");
   document.getElementById("focus-confirm").textContent = t("start");
@@ -267,16 +549,27 @@ function applyLanguage() {
   document.getElementById("autowalk-hint").textContent = t("grabCoffee");
 
   // Welcome popup
-  const wt = document.querySelector(".welcome-title");
-  if (wt) wt.textContent = t("welcomeTitle");
-  const wh = document.querySelector(".welcome-hint");
-  if (wh) wh.textContent = t("welcomeHint");
   const we = document.getElementById("welcome-enter");
   if (we) we.textContent = t("welcomeEnter");
-  const wn = document.getElementById("welcome-name");
-  if (wn) wn.placeholder = t("namePlaceholder");
-  const cpl = document.getElementById("char-picker-label");
-  if (cpl) cpl.textContent = t("chooseCharacter");
+  const wc = document.getElementById("welcome-controls");
+  if (wc) wc.textContent = t(isTouchDevice ? "welcomeControlsMobile" : "welcomeControls");
+  const wnl = document.getElementById("welcome-name-label");
+  if (wnl) wnl.textContent = t("displayedNameLabel");
+  const wtgl = document.getElementById("welcome-tagline-label");
+  if (wtgl) wtgl.textContent = t("taglineLabel");
+  const wll = document.getElementById("welcome-lang-label");
+  if (wll) wll.textContent = t("langLabel");
+  const wtzl = document.getElementById("welcome-tz-label");
+  if (wtzl) wtzl.textContent = t("timezoneLabel");
+  if (typeof updateWelcomeTimeDisplay === "function") updateWelcomeTimeDisplay();
+  const wmp = document.getElementById("welcome-mode-preset");
+  if (wmp) wmp.textContent = t("presetTab");
+  const wmc = document.getElementById("welcome-mode-custom");
+  if (wmc) wmc.textContent = t("customTab");
+  const cpt = document.getElementById("char-popup-title");
+  if (cpt) cpt.textContent = t("chooseCharacter");
+  const ccf = document.getElementById("char-confirm");
+  if (ccf) ccf.textContent = t("charConfirm");
 
   // Chat toggle
   const chatPanel = document.getElementById("chat-panel");
@@ -296,8 +589,69 @@ function applyLanguage() {
   const hc = document.getElementById("history-close");
   if (hc) hc.textContent = t("historyClose");
 
+  // Rec button
+  const _recBtn = document.getElementById("rec-btn");
+  if (_recBtn && !isRecording) _recBtn.title = t("recStart");
+
+  // Auth UI
+  const welcomeAuthOr = document.getElementById("welcome-auth-or");
+  if (welcomeAuthOr) welcomeAuthOr.textContent = t("authOr");
+  const welcomeLoginBtn = document.getElementById("welcome-login-btn");
+  if (welcomeLoginBtn) welcomeLoginBtn.textContent = t("authLogin");
+  const welcomeRegisterBtn = document.getElementById("welcome-register-btn");
+  if (welcomeRegisterBtn) welcomeRegisterBtn.textContent = t("authRegister");
+  if (typeof updateAuthUI === "function") updateAuthUI();
+
   // Re-apply dynamic UI
+  if (typeof updateMiniPiPButton === "function") updateMiniPiPButton();
+  if (typeof renderMiniPiPStatus === "function") renderMiniPiPStatus();
   if (typeof updateRoomUI === "function") updateRoomUI();
+}
+
+// --- Time period helper (use local system time, unless overridden) ---
+const DEBUG_TIME_KEY = "debugTimeHour";
+let debugTimeHour = (() => {
+  try {
+    const raw = localStorage.getItem(DEBUG_TIME_KEY);
+    if (raw === null) return null;
+    const num = Number(raw);
+    if (!Number.isFinite(num)) return null;
+    return Math.max(0, Math.min(23, Math.floor(num)));
+  } catch {
+    return null;
+  }
+})();
+
+function setDebugTimeHour(hour) {
+  if (hour === null || hour === undefined) {
+    debugTimeHour = null;
+    try { localStorage.removeItem(DEBUG_TIME_KEY); } catch {}
+    if (typeof updateWelcomeTimeDisplay === "function") updateWelcomeTimeDisplay();
+    return true;
+  }
+  const num = Number(hour);
+  if (!Number.isFinite(num)) return false;
+  const h = Math.max(0, Math.min(23, Math.floor(num)));
+  debugTimeHour = h;
+  try { localStorage.setItem(DEBUG_TIME_KEY, String(h)); } catch {}
+  if (typeof updateWelcomeTimeDisplay === "function") updateWelcomeTimeDisplay();
+  return true;
+}
+
+function getTimezoneHour() {
+  if (debugTimeHour !== null && debugTimeHour !== undefined) return debugTimeHour;
+  return new Date().getHours();
+}
+
+function getTimePeriod() {
+  const h = getTimezoneHour();
+  if (h < 5)  return { emoji: "\uD83C\uDF11", key: "timeNight" };
+  if (h < 8)  return { emoji: "\uD83C\uDF05", key: "timeMorning" };
+  if (h < 11) return { emoji: "\u2600\uFE0F",  key: "timeForenoon" };
+  if (h < 13) return { emoji: "\uD83C\uDF24\uFE0F", key: "timeNoon" };
+  if (h < 17) return { emoji: "\uD83C\uDF07", key: "timeAfternoon" };
+  if (h < 19) return { emoji: "\uD83C\uDF06", key: "timeDusk" };
+  return { emoji: "\uD83C\uDF11", key: "timeNight" };
 }
 
 // --- Constants ---
@@ -310,7 +664,10 @@ const spriteImages = {};
 function loadSpriteImage(name, src) {
   const img = new Image();
   img.onload = () => { img._loaded = true; };
+  img.onerror = () => { console.error("[IMG] Failed to load:", name, src); };
   img.src = src;
+  // Browser cache: img.complete can be true before onload fires
+  if (img.complete) img._loaded = true;
   spriteImages[name] = img;
   return img;
 }
@@ -318,136 +675,669 @@ loadSpriteImage("room_builder_office", "/assets/modern_office/1_Room_Builder_Off
 loadSpriteImage("modern_office", "/assets/modern_office/Modern_Office_32x32.png");
 loadSpriteImage("mi_room_builder", "/assets/moderninteriors-win/1_Interiors/32x32/Room_Builder_32x32.png");
 loadSpriteImage("mi_interiors", "/assets/moderninteriors-win/1_Interiors/32x32/Interiors_32x32.png");
+loadSpriteImage("modernexteriors_win", "/assets/modernexteriors-win/Modern_Exteriors_32x32/Modern_Exteriors_Complete_Tileset_32x32.png");
 const doorSlidingImg = loadSpriteImage("door_sliding", "/assets/moderninteriors-win/3_Animated_objects/32x32/spritesheets/animated_door_glass_sliding_32x32.png");
 loadSpriteImage("animated_cat", "/assets/moderninteriors-win/3_Animated_objects/16x16/spritesheets/animated_cat.png");
+loadSpriteImage("cat_orange3", "/assets/cats/orange_new.png");
 loadSpriteImage("animated_coffee", "/assets/moderninteriors-win/3_Animated_objects/32x32/spritesheets/animated_coffee_32x32.png");
-
+loadSpriteImage("studyRoomDoor", "/assets/moderninteriors-win/3_Animated_objects/32x32/spritesheets/animated_door_big_1_32x32.png");
+loadSpriteImage("receptionist", "/assets/moderninteriors-win/3_Animated_objects/32x32/spritesheets/animated_receptionist_2_32x32.png");
+loadSpriteImage("jp_door_sliding", "/assets/moderninteriors-win/3_Animated_objects/32x32/spritesheets/animated_japanese_sliding_door_32x32.png");
+loadSpriteImage("campfire", "/assets/modernexteriors-win/Modern_Exteriors_32x32/Animated_32x32/Animated_sheets_32x32/Campfire_32x32.png");
+loadSpriteImage("water_tileset", "/assets/modernexteriors-win/Modern_Exteriors_32x32/Animated_32x32/Animated_Terrains_32x32/Water_Tileset_32x32.png");
+loadSpriteImage("animated_butterfly_3_32x32", "/assets/moderninteriors-win/3_Animated_objects/32x32/spritesheets/animated_butterfly_3_32x32.png");
+loadSpriteImage("animated_frog_3_idle_32x32", "/assets/moderninteriors-win/3_Animated_objects/32x32/spritesheets/animated_frog_3_idle_32x32.png");
+loadSpriteImage("Fishes_3_32x32", "/assets/modernexteriors-win/Modern_Exteriors_32x32/Animated_32x32/Animated_sheets_32x32/Fishes_3_32x32.png");
+loadSpriteImage("tileset_game", "/maps/tileset_game.png");
+loadSpriteImage("hand_cursor", "/assets/hand_cursor.png");
 // Animated object tileset metadata (keyed by .tsj filename without extension)
 const OBJECT_TILESETS = {
-  banli:  { imgKey: "animated_cat",    tileW: 48, tileH: 16, columns: 12, frameCount: 12 },
-  coffee: { imgKey: "animated_coffee", tileW: 32, tileH: 32, columns: 6,  frameCount: 12 },
+  banli:              { imgKey: "animated_cat",      tileW: 48, tileH: 16, columns: 12, frameCount: 12 },
+  coffee:             { imgKey: "animated_coffee",   tileW: 32, tileH: 32, columns: 6,  frameCount: 12 },
+  studyRoomDoor:      { imgKey: "studyRoomDoor",     tileW: 32, tileH: 96, columns: 5,  frameCount: 5,  isDoor: true, openFrames: 5,  openDist: 2 },
+  door_glass_sliding: { imgKey: "door_sliding",      tileW: 64, tileH: 64, columns: 14, frameCount: 14, isDoor: true, openFrames: 7,  openDist: 2 },
+  receptionist:       { imgKey: "receptionist",      tileW: 32, tileH: 64, columns: 7,  frameCount: 7 },
+  jp_door_sliding:    { imgKey: "jp_door_sliding",   tileW: 64, tileH: 64, columns: 20, frameCount: 20, isDoor: true, openFrames: 10, openDist: 2 },
+  Campfire_32x32:     { imgKey: "campfire",          tileW: 32, tileH: 64, columns: 6,  frameCount: 6 },
+  Water_Tileset_32x32:{ imgKey: "water_tileset",     tileW: 96, tileH: 96, columns: 8,  frameCount: 8 },
+  animated_butterfly_3_32x32: { imgKey: "animated_butterfly_3_32x32", tileW: 32, tileH: 32, columns: 4,  frameCount: 4 },
+  animated_frog_3_idle_32x32: { imgKey: "animated_frog_3_idle_32x32", tileW: 32, tileH: 32, columns: 6,  frameCount: 6 },
+  Fishes_3_32x32:             { imgKey: "Fishes_3_32x32",             tileW: 32, tileH: 32, columns: 14, frameCount: 14 },
 };
 
-// --- Character sprite sheets ---
-const CHARACTER_NAMES = ["Adam", "Alex", "Amelia", "Ash", "Bob", "Bruce", "Dan", "Edward"];
-const CHAR_SPRITE_BASE = "/assets/moderninteriors-win/2_Characters/Old/Single_Characters_Legacy/32x32/";
-for (const cname of CHARACTER_NAMES) {
-  loadSpriteImage(`char_${cname}_idle`, CHAR_SPRITE_BASE + `${cname}_idle_anim_32x32.png`);
-  loadSpriteImage(`char_${cname}_run`,  CHAR_SPRITE_BASE + `${cname}_run_32x32.png`);
+// --- Character Generator sprite system ---
+const CHAR_GEN_BASE = "/assets/moderninteriors-win/2_Characters/Character_Generator/";
+const PREMADE_COUNT = 20;
+
+// Asset catalog: style -> variant count
+const CHAR_CATALOG = {
+  bodies: 9,
+  eyes: 7,
+  outfits: {1:10,2:4,3:4,4:3,5:5,6:4,7:4,8:3,9:3,10:5,11:4,12:3,13:4,14:5,15:3,16:3,17:3,18:4,19:4,20:3,21:4,22:4,23:4,24:4,25:5,26:3,27:3,28:4,29:4,30:3,31:5,32:5,33:3},
+  hairs: {1:7,2:7,3:7,4:7,5:7,6:7,7:7,8:7,9:7,10:7,11:7,12:7,13:7,14:7,15:7,16:7,17:7,18:7,19:7,20:7,21:7,22:7,23:7,24:7,25:7,26:7,27:6,28:6,29:6},
+  accessories: [
+    {id:1,name:"Ladybug",variants:4},{id:2,name:"Bee",variants:3},{id:3,name:"Backpack",variants:10},
+    {id:4,name:"Snapback",variants:6},{id:5,name:"Dino_Snapback",variants:3},{id:6,name:"Policeman_Hat",variants:6},
+    {id:7,name:"Bataclava",variants:3},{id:8,name:"Detective_Hat",variants:3},{id:9,name:"Zombie_Brain",variants:3},
+    {id:10,name:"Bolt",variants:3},{id:11,name:"Beanie",variants:5},{id:12,name:"Mustache",variants:5},
+    {id:13,name:"Beard",variants:5},{id:14,name:"Gloves",variants:4},{id:15,name:"Glasses",variants:6},
+    {id:16,name:"Monocle",variants:3},{id:17,name:"Medical_Mask",variants:5},{id:18,name:"Chef",variants:3},
+    {id:19,name:"Party_Cone",variants:4},
+  ],
+};
+
+// Animation row definitions — each "row" is 64px tall (head 32px + body 32px)
+// sy = ANIM_ROWS[anim] * 64
+const ANIM_ROWS = { static: 0, idle: 1, walk: 2, sleep: 3, sit: 4, phone: 7, exercise: 11 };
+const FRAMES_PER_DIR = 6;
+
+// Load all 20 premade character sheets
+for (let i = 1; i <= PREMADE_COUNT; i++) {
+  const id = String(i).padStart(2, "0");
+  loadSpriteImage(`premade_${id}`, `${CHAR_GEN_BASE}0_Premade_Characters/32x32/Premade_Character_32x32_${id}.png`);
 }
 
-// --- Character picker ---
-let selectedCharacter = localStorage.getItem("playerCharacter") || CHARACTER_NAMES[0];
+// On-demand layer loading for custom characters
+function loadCharLayer(type, fileId) {
+  const key = `layer_${type}_${fileId}`;
+  if (spriteImages[key]) return spriteImages[key];
+  const paths = {
+    body: `${CHAR_GEN_BASE}Bodies/32x32/Body_32x32_${fileId}.png`,
+    eyes: `${CHAR_GEN_BASE}Eyes/32x32/Eyes_32x32_${fileId}.png`,
+    outfit: `${CHAR_GEN_BASE}Outfits/32x32/Outfit_${fileId.split("_")[0]}_32x32_${fileId.split("_")[1]}.png`,
+    hair: `${CHAR_GEN_BASE}Hairstyles/32x32/Hairstyle_${fileId.split("_")[0]}_32x32_${fileId.split("_")[1]}.png`,
+    acc: (() => {
+      // acc fileId format: "NN_Name_VV"
+      const parts = fileId.split("_");
+      const accId = parts[0];
+      const variant = parts[parts.length - 1];
+      const name = parts.slice(1, -1).join("_");
+      return `${CHAR_GEN_BASE}Accessories/32x32/Accessory_${accId}_${name}_32x32_${variant}.png`;
+    })(),
+  };
+  loadSpriteImage(key, paths[type]);
+  return spriteImages[key];
+}
 
-function drawCharPreview(canvas, charName) {
+// Composite cache for custom layered characters
+const compositeCache = new Map();
+
+function getCompositeKey(config) {
+  if (config.preset) return `p${config.preset}`;
+  return `b${config.body}_e${config.eyes}_o${config.outfit}_h${config.hair}_a${config.acc || "x"}`;
+}
+
+function ensureLayersLoaded(config) {
+  if (config.preset) return;
+  loadCharLayer("body", String(config.body).padStart(2, "0"));
+  loadCharLayer("eyes", String(config.eyes).padStart(2, "0"));
+  loadCharLayer("outfit", config.outfit);
+  loadCharLayer("hair", config.hair);
+  if (config.acc) loadCharLayer("acc", config.acc);
+}
+
+function buildComposite(config, cacheKey) {
+  const W = 1792, H = 1312;
+  const bodyKey = `layer_body_${String(config.body).padStart(2, "0")}`;
+  const eyesKey = `layer_eyes_${String(config.eyes).padStart(2, "0")}`;
+  const outfitKey = `layer_outfit_${config.outfit}`;
+  const hairKey = `layer_hair_${config.hair}`;
+  const layers = [
+    spriteImages[bodyKey],
+    spriteImages[eyesKey],
+    spriteImages[outfitKey],
+    spriteImages[hairKey],
+  ];
+  if (config.acc) layers.push(spriteImages[`layer_acc_${config.acc}`]);
+  if (layers.some(l => !l || !l._loaded)) return null;
+  const oc = document.createElement("canvas");
+  oc.width = W; oc.height = H;
+  const octx = oc.getContext("2d");
+  for (const layer of layers) {
+    octx.drawImage(layer, 0, 0, Math.min(layer.naturalWidth, W), H, 0, 0, W, H);
+  }
+  oc._loaded = true;
+  compositeCache.set(cacheKey, oc);
+  return oc;
+}
+
+function getCharacterSheet(config) {
+  if (!config) config = { preset: 1 };
+  if (config.preset) {
+    const key = `premade_${String(config.preset).padStart(2, "0")}`;
+    return spriteImages[key];
+  }
+  const cacheKey = getCompositeKey(config);
+  if (compositeCache.has(cacheKey)) return compositeCache.get(cacheKey);
+  ensureLayersLoaded(config);
+  return buildComposite(config, cacheKey);
+}
+
+// --- Character picker (Character Generator) ---
+// Migrate legacy playerCharacter string to charConfig
+let selectedCharConfig = (() => {
+  const saved = localStorage.getItem("charConfig");
+  if (saved) { try { return JSON.parse(saved); } catch(e) {} }
+  // Migrate legacy string
+  const legacy = localStorage.getItem("playerCharacter");
+  if (legacy) {
+    localStorage.removeItem("playerCharacter");
+    const config = { preset: 1 };
+    localStorage.setItem("charConfig", JSON.stringify(config));
+    return config;
+  }
+  return { preset: 1 };
+})();
+let savedTagline = localStorage.getItem("playerTagline") || "";
+let selectedLanguages = (() => {
+  const saved = localStorage.getItem("playerLanguages");
+  if (saved) { try { const arr = JSON.parse(saved); if (Array.isArray(arr) && arr.length) return arr; } catch(e) {} }
+  return [currentLang === "zh" ? "zh-CN" : "en"];
+})();
+
+function drawCharPreview(canvas, config) {
+  if (!config) config = { preset: 1 };
   canvas.width = 32;
   canvas.height = 64;
   const c = canvas.getContext("2d");
   c.imageSmoothingEnabled = false;
-  const sheet = spriteImages[`char_${charName}_idle`];
+  const sheet = getCharacterSheet(config);
   if (sheet && sheet._loaded) {
-    // idle-down frame 0: col 18 (SPRITE_DIR_OFFSET.down=18), row 0, 32×64
-    c.drawImage(sheet, 18 * 32, 0, 32, 64, 0, 0, 32, 64);
+    // Static down frame: row 0 (sy=0), col 3 (direction "down"), 32x64
+    c.drawImage(sheet, 3 * 32, 0, 32, 64, 0, 0, 32, 64);
   } else {
-    // Retry once sprite loads
-    const img = spriteImages[`char_${charName}_idle`];
-    if (img) img.onload = () => {
-      img._loaded = true;
-      c.drawImage(img, 18 * 32, 0, 32, 64, 0, 0, 32, 64);
+    // Retry when sheet loads
+    const tryDraw = () => {
+      const s = getCharacterSheet(config);
+      if (s && s._loaded) {
+        c.clearRect(0, 0, 32, 64);
+        c.drawImage(s, 3 * 32, 0, 32, 64, 0, 0, 32, 64);
+      } else {
+        setTimeout(tryDraw, 200);
+      }
     };
+    setTimeout(tryDraw, 200);
   }
 }
 
-function buildCharPicker(containerId, onSelect) {
-  const container = document.getElementById(containerId);
-  if (!container) return;
-  container.innerHTML = "";
-  CHARACTER_NAMES.forEach(name => {
-    const cell = document.createElement("div");
-    cell.className = "char-pick" + (name === selectedCharacter ? " selected" : "");
-    cell.dataset.char = name;
-    const cvs = document.createElement("canvas");
-    cvs.style.width = "32px";
-    cvs.style.height = "48px";
-    cvs.style.objectFit = "contain";
-    cell.appendChild(cvs);
-    container.appendChild(cell);
-    drawCharPreview(cvs, name);
-    cell.addEventListener("click", () => {
-      container.querySelectorAll(".char-pick").forEach(c => c.classList.remove("selected"));
-      cell.classList.add("selected");
-      onSelect(name);
-    });
-  });
+function drawCharHeadPreview(canvas, config) {
+  if (!config) config = { preset: 1 };
+  canvas.width = 32;
+  canvas.height = 32;
+  const c = canvas.getContext("2d");
+  c.imageSmoothingEnabled = false;
+  const sheet = getCharacterSheet(config);
+  if (sheet && sheet._loaded) {
+    // Face/eyes span across the middle of the 64px frame, not just top 32px.
+    c.drawImage(sheet, 3 * 32, 20, 32, 32, 0, 0, 32, 32);
+  } else {
+    const tryDraw = () => {
+      const s = getCharacterSheet(config);
+      if (s && s._loaded) {
+        c.clearRect(0, 0, 32, 32);
+        c.drawImage(s, 3 * 32, 20, 32, 32, 0, 0, 32, 32);
+      } else {
+        setTimeout(tryDraw, 200);
+      }
+    };
+    setTimeout(tryDraw, 200);
+  }
 }
 
 function updateSettingsCharBtn() {
   const btn = document.getElementById("settings-char-btn");
-  if (!btn) return;
-  let cvs = btn.querySelector("canvas");
-  if (!cvs) {
-    cvs = document.createElement("canvas");
-    cvs.style.width = "24px";
-    cvs.style.height = "28px";
-    cvs.style.objectFit = "contain";
-    btn.appendChild(cvs);
+  if (btn) {
+    let cvs = btn.querySelector("canvas");
+    if (!cvs) {
+      cvs = document.createElement("canvas");
+      cvs.style.width = "24px";
+      cvs.style.height = "28px";
+      cvs.style.objectFit = "contain";
+      btn.appendChild(cvs);
+    }
+    drawCharPreview(cvs, selectedCharConfig);
   }
-  drawCharPreview(cvs, selectedCharacter);
+  const profileBtn = document.getElementById("profile-icon");
+  if (profileBtn) {
+    let head = profileBtn.querySelector("canvas");
+    if (!head) {
+      head = document.createElement("canvas");
+      profileBtn.appendChild(head);
+    }
+    drawCharHeadPreview(head, selectedCharConfig);
+  }
 }
 
-// Init pickers once sprites are likely loaded
-setTimeout(() => {
-  function onCharSelect(name) {
-    selectedCharacter = name;
-    localStorage.setItem("playerCharacter", name);
-    if (localPlayer) {
-      localPlayer.character = name;
-      socket.emit("setCharacter", name);
+// === Character Customizer (shared logic for welcome + overlay) ===
+let customizerConfig = null;
+let customizerTab = "body";
+let customizerCtx = null;
+let customizerIsOverlay = false;   // true = settings overlay (defer save)
+let customizerSavedConfig = null;  // snapshot to revert on Cancel
+
+function applyCharConfig(config) {
+  selectedCharConfig = config;
+  localStorage.setItem("charConfig", JSON.stringify(config));
+  if (localPlayer) {
+    localPlayer.character = config;
+    socket.emit("setCharacter", config);
+  }
+  updateSettingsCharBtn();
+}
+
+// In overlay mode, only update preview; in welcome mode, apply immediately
+function onCustomizerChange() {
+  if (!customizerIsOverlay) {
+    applyCharConfig({ ...customizerConfig });
+  }
+}
+
+function initCustomizerCtx(previewId, optionsId, variantsId, tabsContainer, presetsId) {
+  customizerCtx = {
+    preview: document.getElementById(previewId),
+    options: document.getElementById(optionsId),
+    variants: document.getElementById(variantsId),
+    tabs: tabsContainer,
+    presets: document.getElementById(presetsId),
+  };
+}
+
+function generateRandomConfig() {
+  const randInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
+  const pad = n => String(n).padStart(2, "0");
+  const bodyId = randInt(1, CHAR_CATALOG.bodies);
+  const eyesId = randInt(1, CHAR_CATALOG.eyes);
+  const outfitStyles = Object.keys(CHAR_CATALOG.outfits).map(Number);
+  const oStyle = outfitStyles[randInt(0, outfitStyles.length - 1)];
+  const oVar = randInt(1, CHAR_CATALOG.outfits[oStyle]);
+  const hairStyles = Object.keys(CHAR_CATALOG.hairs).map(Number);
+  const hStyle = hairStyles[randInt(0, hairStyles.length - 1)];
+  const hVar = randInt(1, CHAR_CATALOG.hairs[hStyle]);
+  // 30% chance of accessory
+  let acc = null;
+  if (Math.random() < 0.3) {
+    const a = CHAR_CATALOG.accessories[randInt(0, CHAR_CATALOG.accessories.length - 1)];
+    acc = pad(a.id) + "_" + a.name + "_" + pad(randInt(1, a.variants));
+  }
+  return { body: bodyId, eyes: eyesId, outfit: pad(oStyle) + "_" + pad(oVar), hair: pad(hStyle) + "_" + pad(hVar), acc };
+}
+
+function activateCustomizer(initialConfig, defaultTab) {
+  const isPremade = initialConfig && initialConfig.preset;
+  customizerConfig = (!initialConfig || isPremade)
+    ? { body: 1, eyes: 1, outfit: "01_01", hair: "01_01", acc: null }
+    : { ...initialConfig };
+  customizerTab = defaultTab || "body";
+  renderPresetsRow(customizerCtx && customizerCtx.presets);
+  // If starting with a premade, show it in preview and hide custom section
+  if (isPremade) {
+    customizerConfig = { ...initialConfig };
+    if (customizerCtx && customizerCtx.preview) {
+      drawCharPreview(customizerCtx.preview, initialConfig);
     }
-    // Sync both pickers
-    document.querySelectorAll(".char-picker-grid").forEach(grid => {
-      grid.querySelectorAll(".char-pick").forEach(c => {
-        c.classList.toggle("selected", c.dataset.char === name);
+    setCustomSectionVisible(false);
+  } else {
+    renderCustomizerPreview();
+    renderCustomizerTab(customizerTab);
+    setCustomSectionVisible(true);
+  }
+  if (customizerCtx && customizerCtx.tabs) {
+    customizerCtx.tabs.querySelectorAll(".ctab").forEach(b =>
+      b.classList.toggle("active", b.dataset.tab === customizerTab));
+  }
+}
+
+// Open the overlay customizer (from settings)
+function openCustomizer(initialConfig) {
+  const overlay = document.getElementById("char-customizer");
+  if (!overlay) return;
+  customizerIsOverlay = true;
+  customizerSavedConfig = JSON.parse(JSON.stringify(selectedCharConfig));
+  initCustomizerCtx("customizer-preview-canvas", "customizer-options", "customizer-variants",
+    overlay.querySelector(".customizer-tabs"), "overlay-presets");
+  overlay.style.display = "flex";
+  activateCustomizer(initialConfig, "body");
+}
+
+function closeCustomizer(revert) {
+  const overlay = document.getElementById("char-customizer");
+  if (overlay) overlay.style.display = "none";
+  if (revert && customizerSavedConfig) {
+    applyCharConfig(customizerSavedConfig);
+  }
+  customizerIsOverlay = false;
+  customizerSavedConfig = null;
+}
+
+function renderCustomizerPreview() {
+  if (!customizerCtx || !customizerCtx.preview || !customizerConfig) return;
+  const cacheKey = getCompositeKey(customizerConfig);
+  compositeCache.delete(cacheKey);
+  drawCharPreview(customizerCtx.preview, customizerConfig);
+}
+
+// Show/hide the custom editing section (tabs + options + variants)
+function setCustomSectionVisible(visible) {
+  if (!customizerCtx) return;
+  const display = visible ? "" : "none";
+  if (customizerCtx.tabs) customizerCtx.tabs.style.display = visible ? "flex" : "none";
+  if (customizerCtx.options) customizerCtx.options.style.display = visible ? "flex" : "none";
+  if (customizerCtx.variants) customizerCtx.variants.style.display = visible ? "flex" : "none";
+}
+
+function renderPresetsRow(container) {
+  if (!container) return;
+  container.innerHTML = "";
+  // Random button
+  const randBtn = document.createElement("div");
+  randBtn.className = "cust-random";
+  randBtn.textContent = "\uD83C\uDFB2";
+  randBtn.title = "Random";
+  randBtn.addEventListener("click", () => {
+    const config = generateRandomConfig();
+    customizerConfig = config;
+    if (!customizerIsOverlay) applyCharConfig(config);
+    if (customizerCtx && customizerCtx.preview) {
+      compositeCache.delete(getCompositeKey(config));
+      drawCharPreview(customizerCtx.preview, config);
+    }
+    container.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
+    // Show custom section and refresh tabs
+    setCustomSectionVisible(true);
+    renderCustomizerTab(customizerTab);
+  });
+  container.appendChild(randBtn);
+  // Premade characters
+  for (let i = 1; i <= PREMADE_COUNT; i++) {
+    const config = { preset: i };
+    const cell = document.createElement("div");
+    cell.className = "cust-option cust-premade";
+    const cvs = document.createElement("canvas");
+    cvs.style.width = "32px";
+    cvs.style.height = "48px";
+    cvs.style.objectFit = "contain";
+    cvs.style.imageRendering = "pixelated";
+    cell.appendChild(cvs);
+    drawCharPreview(cvs, config);
+    cell.addEventListener("click", () => {
+      customizerConfig = { ...config };
+      if (!customizerIsOverlay) applyCharConfig(config);
+      if (customizerCtx && customizerCtx.preview) {
+        drawCharPreview(customizerCtx.preview, config);
+      }
+      container.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
+      cell.classList.add("selected");
+      // Hide custom section — premade is a complete character
+      setCustomSectionVisible(false);
+    });
+    container.appendChild(cell);
+  }
+}
+
+function renderCustomizerTab(tabName) {
+  customizerTab = tabName;
+  if (!customizerCtx) return;
+  const optionsEl = customizerCtx.options;
+  const variantsEl = customizerCtx.variants;
+  if (!optionsEl || !variantsEl) return;
+  optionsEl.innerHTML = "";
+  variantsEl.innerHTML = "";
+
+  // For custom tabs, ensure we have a custom config to edit
+  if (!customizerConfig) {
+    customizerConfig = { body: 1, eyes: 1, outfit: "01_01", hair: "01_01", acc: null };
+  }
+
+  if (tabName === "body") {
+    for (let i = 1; i <= CHAR_CATALOG.bodies; i++) {
+      const btn = document.createElement("div");
+      btn.className = "cust-option" + (customizerConfig.body === i ? " selected" : "");
+      const colors = ["#bf8b78","#ffcbb0","#ffb893","#bb845c","#cdb57a","#d4cabb","#f0ae80","#e6b8d7","#bab8d7"];
+      btn.style.background = colors[i - 1] || "#ccc";
+      btn.style.width = "36px"; btn.style.height = "36px"; btn.style.borderRadius = "50%";
+      btn.addEventListener("click", () => {
+        customizerConfig.body = i;
+        onCustomizerChange();
+        renderCustomizerTab(tabName);
+        renderCustomizerPreview();
+      });
+      optionsEl.appendChild(btn);
+    }
+  } else if (tabName === "eyes") {
+    for (let i = 1; i <= CHAR_CATALOG.eyes; i++) {
+      const btn = document.createElement("div");
+      btn.className = "cust-option" + (customizerConfig.eyes === i ? " selected" : "");
+      btn.textContent = `${i}`;
+      btn.addEventListener("click", () => {
+        customizerConfig.eyes = i;
+        onCustomizerChange();
+        renderCustomizerTab(tabName);
+        renderCustomizerPreview();
+      });
+      optionsEl.appendChild(btn);
+    }
+  } else if (tabName === "outfit") {
+    const styles = Object.keys(CHAR_CATALOG.outfits).map(Number);
+    const currentStyle = parseInt(customizerConfig.outfit.split("_")[0]);
+    const currentVariant = parseInt(customizerConfig.outfit.split("_")[1]);
+    styles.forEach(s => {
+      const btn = document.createElement("div");
+      btn.className = "cust-option" + (currentStyle === s ? " selected" : "");
+      btn.textContent = s;
+      btn.addEventListener("click", () => {
+        customizerConfig.outfit = String(s).padStart(2, "0") + "_01";
+        onCustomizerChange();
+        renderCustomizerTab(tabName);
+        renderCustomizerPreview();
+      });
+      optionsEl.appendChild(btn);
+    });
+    const varCount = CHAR_CATALOG.outfits[currentStyle] || 1;
+    for (let v = 1; v <= varCount; v++) {
+      const btn = document.createElement("div");
+      btn.className = "cust-variant" + (currentVariant === v ? " selected" : "");
+      btn.textContent = v;
+      btn.addEventListener("click", () => {
+        customizerConfig.outfit = String(currentStyle).padStart(2, "0") + "_" + String(v).padStart(2, "0");
+        onCustomizerChange();
+        renderCustomizerTab(tabName);
+        renderCustomizerPreview();
+      });
+      variantsEl.appendChild(btn);
+    }
+  } else if (tabName === "hair") {
+    const styles = Object.keys(CHAR_CATALOG.hairs).map(Number);
+    const currentStyle = parseInt(customizerConfig.hair.split("_")[0]);
+    const currentVariant = parseInt(customizerConfig.hair.split("_")[1]);
+    styles.forEach(s => {
+      const btn = document.createElement("div");
+      btn.className = "cust-option" + (currentStyle === s ? " selected" : "");
+      btn.textContent = s;
+      btn.addEventListener("click", () => {
+        customizerConfig.hair = String(s).padStart(2, "0") + "_01";
+        onCustomizerChange();
+        renderCustomizerTab(tabName);
+        renderCustomizerPreview();
+      });
+      optionsEl.appendChild(btn);
+    });
+    const varCount = CHAR_CATALOG.hairs[currentStyle] || 1;
+    for (let v = 1; v <= varCount; v++) {
+      const btn = document.createElement("div");
+      btn.className = "cust-variant" + (currentVariant === v ? " selected" : "");
+      btn.textContent = v;
+      btn.addEventListener("click", () => {
+        customizerConfig.hair = String(currentStyle).padStart(2, "0") + "_" + String(v).padStart(2, "0");
+        onCustomizerChange();
+        renderCustomizerTab(tabName);
+        renderCustomizerPreview();
+      });
+      variantsEl.appendChild(btn);
+    }
+  } else if (tabName === "acc") {
+    const noneBtn = document.createElement("div");
+    noneBtn.className = "cust-option" + (!customizerConfig.acc ? " selected" : "");
+    noneBtn.textContent = "None";
+    noneBtn.style.fontSize = "11px";
+    noneBtn.addEventListener("click", () => {
+      customizerConfig.acc = null;
+      onCustomizerChange();
+      renderCustomizerTab(tabName);
+      renderCustomizerPreview();
+    });
+    optionsEl.appendChild(noneBtn);
+
+    let currentAccId = null, currentAccVariant = null;
+    if (customizerConfig.acc) {
+      const parts = customizerConfig.acc.split("_");
+      currentAccId = parseInt(parts[0]);
+      currentAccVariant = parseInt(parts[parts.length - 1]);
+    }
+    CHAR_CATALOG.accessories.forEach(acc => {
+      const btn = document.createElement("div");
+      btn.className = "cust-option" + (currentAccId === acc.id ? " selected" : "");
+      btn.textContent = acc.id;
+      btn.title = acc.name.replace(/_/g, " ");
+      btn.addEventListener("click", () => {
+        customizerConfig.acc = String(acc.id).padStart(2, "0") + "_" + acc.name + "_01";
+        onCustomizerChange();
+        renderCustomizerTab(tabName);
+        renderCustomizerPreview();
+      });
+      optionsEl.appendChild(btn);
+    });
+    if (currentAccId) {
+      const accInfo = CHAR_CATALOG.accessories.find(a => a.id === currentAccId);
+      if (accInfo) {
+        for (let v = 1; v <= accInfo.variants; v++) {
+          const btn = document.createElement("div");
+          btn.className = "cust-variant" + (currentAccVariant === v ? " selected" : "");
+          btn.textContent = v;
+          btn.addEventListener("click", () => {
+            customizerConfig.acc = String(currentAccId).padStart(2, "0") + "_" + accInfo.name + "_" + String(v).padStart(2, "0");
+            onCustomizerChange();
+            renderCustomizerTab(tabName);
+            renderCustomizerPreview();
+          });
+          variantsEl.appendChild(btn);
+        }
+      }
+    }
+  }
+}
+
+// Hook up events (deferred to DOM ready)
+setTimeout(() => {
+  // Overlay customizer (for settings)
+  document.querySelectorAll("#char-customizer .ctab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (customizerConfig && customizerConfig.preset) {
+        customizerConfig = { body: 1, eyes: 1, outfit: "01_01", hair: "01_01", acc: null };
+      }
+      setCustomSectionVisible(true);
+      if (customizerCtx && customizerCtx.presets) customizerCtx.presets.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
+      document.querySelectorAll("#char-customizer .ctab").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderCustomizerTab(btn.dataset.tab);
+      renderCustomizerPreview();
+    });
+  });
+  document.getElementById("customizer-confirm")?.addEventListener("click", () => {
+    if (customizerConfig) applyCharConfig({ ...customizerConfig });
+    updateSettingsCharBtn();
+    closeCustomizer(false);
+  });
+  document.getElementById("customizer-cancel")?.addEventListener("click", () => closeCustomizer(true));
+
+  // Welcome customizer (inline in welcome popup)
+  const welcomeTabs = document.getElementById("welcome-tabs");
+  if (welcomeTabs) {
+    initCustomizerCtx("welcome-preview-canvas", "welcome-options", "welcome-variants", welcomeTabs, "welcome-presets");
+    welcomeTabs.querySelectorAll(".ctab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (customizerConfig && customizerConfig.preset) {
+          customizerConfig = { body: 1, eyes: 1, outfit: "01_01", hair: "01_01", acc: null };
+        }
+        setCustomSectionVisible(true);
+        if (customizerCtx && customizerCtx.presets) customizerCtx.presets.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
+        welcomeTabs.querySelectorAll(".ctab").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        renderCustomizerTab(btn.dataset.tab);
+        renderCustomizerPreview();
       });
     });
-    updateSettingsCharBtn();
+    // Initialize with body tab and default config
+    activateCustomizer(selectedCharConfig, "body");
+
+    // Welcome mode tabs (Presets / Custom)
+    const modePreset = document.getElementById("welcome-mode-preset");
+    const modeCustom = document.getElementById("welcome-mode-custom");
+    const presetsEl = document.getElementById("welcome-presets");
+    function setWelcomeMode(mode) {
+      if (mode === "preset") {
+        modePreset.classList.add("active");
+        modeCustom.classList.remove("active");
+        if (presetsEl) presetsEl.style.display = "";
+        setCustomSectionVisible(false);
+      } else {
+        modeCustom.classList.add("active");
+        modePreset.classList.remove("active");
+        if (presetsEl) presetsEl.style.display = "none";
+        if (customizerConfig && customizerConfig.preset) {
+          customizerConfig = { body: 1, eyes: 1, outfit: "01_01", hair: "01_01", acc: null };
+        }
+        setCustomSectionVisible(true);
+        renderCustomizerTab(customizerTab);
+        renderCustomizerPreview();
+      }
+    }
+    if (modePreset) modePreset.addEventListener("click", () => setWelcomeMode("preset"));
+    if (modeCustom) modeCustom.addEventListener("click", () => setWelcomeMode("custom"));
+    // Default to preset mode
+    setWelcomeMode("preset");
+
+    // Dice button (random)
+    const diceBtn = document.getElementById("welcome-dice");
+    if (diceBtn) {
+      diceBtn.addEventListener("click", () => {
+        const config = generateRandomConfig();
+        customizerConfig = config;
+        applyCharConfig(config);
+        if (customizerCtx && customizerCtx.preview) {
+          compositeCache.delete(getCompositeKey(config));
+          drawCharPreview(customizerCtx.preview, config);
+        }
+        if (presetsEl) presetsEl.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
+        // Switch to custom mode since random generates a custom config
+        setWelcomeMode("custom");
+      });
+    }
   }
-  buildCharPicker("welcome-char-grid", onCharSelect);
-  buildCharPicker("settings-char-grid", (name) => {
-    onCharSelect(name);
-    // Close settings picker after selection
-    const picker = document.getElementById("settings-char-picker");
-    if (picker) picker.classList.remove("visible");
-  });
+
   updateSettingsCharBtn();
 }, 500);
 
-// Settings character button toggle
+// Settings character button -> open overlay customizer
 document.getElementById("settings-char-btn")?.addEventListener("click", (e) => {
   e.stopPropagation();
-  const picker = document.getElementById("settings-char-picker");
-  if (picker) picker.classList.toggle("visible");
-});
-// Close settings char picker when clicking outside
-document.addEventListener("click", (e) => {
-  const picker = document.getElementById("settings-char-picker");
-  const wrap = document.getElementById("settings-char-wrap");
-  if (picker && wrap && !wrap.contains(e.target)) {
-    picker.classList.remove("visible");
-  }
+  closeSettingsPanel();
+  openCustomizer(selectedCharConfig);
 });
 
 // Known tileset metadata (columns needed to compute source rect from GID)
 const TILESET_INFO = {
-  tileset_game:          { columns: 13, imgKey: null },
+  tileset_game:          { columns: 18, imgKey: "tileset_game" },
   room_builder_office:   { columns: 16, imgKey: "room_builder_office" },
   modern_office:         { columns: 16, imgKey: "modern_office" },
   mi_room_builder:       { columns: 76, imgKey: "mi_room_builder" },
   mi_interiors:          { columns: 16, imgKey: "mi_interiors" },
+  ME:                    { columns: 176, imgKey: "modernexteriors_win" },
+  "modernexteriors-win": { columns: 176, imgKey: "modernexteriors_win" },
 };
 
-// Populated from Tiled JSON tilesets array
-let tilesetRegistry = []; // [{firstgid, img, columns}, ...]
+// Populated from Tiled JSON tilesets array (per room)
+const roomTilesetRegistry = { focus: [], rest: [] };
+let tilesetRegistry = []; // active registry for current room
 
 function drawTileByGID(gid, x, y) {
   if (gid === 0) return false;
@@ -458,7 +1348,7 @@ function drawTileByGID(gid, x, y) {
       const localId = gid - ts.firstgid;
       const sx = (localId % ts.columns) * 32;
       const sy = Math.floor(localId / ts.columns) * 32;
-      ctx.drawImage(ts.img, sx, sy, 32, 32, x, y, TILE + 1, TILE + 1);
+      ctx.drawImage(ts.img, sx, sy, 32, 32, x, y, TILE, TILE);
       return true;
     }
   }
@@ -532,10 +1422,12 @@ function updateDoors() {
 
   for (const door of doors) {
     if (anyNear && (door.state === "closed" || door.state === "closing")) {
+      if (door === doors[0]) playDoorSlidingSound();
       door.state = "opening";
       if (door.frame >= DOOR_OPEN_FRAMES - 1) door.frame = 0;
       door.lastTime = now;
     } else if (!anyNear && (door.state === "open" || door.state === "opening")) {
+      if (door === doors[0]) playDoorSlidingSound();
       door.state = "closing";
       if (door.frame <= 0) door.frame = DOOR_OPEN_FRAMES - 1;
       door.lastTime = now;
@@ -587,7 +1479,7 @@ function isDoorTile(col, row) {
 // ROOM MAPS
 // ============================================================
 // 0=floor, 1=wall, 2=desk, 3=bookshelf, 4=plant, 5=rug,
-// 6=(unused), 7=chair, 8=portal, 9=sofa, 10=coffee_machine, 12=door
+// 6=(unused), 7=chair, 8=portal, 9=sofa, 10=coffee_machine, 12=door, 15=yoga_mat
 
 // --- Focus Room Colors ---
 const FOCUS_COLORS = {
@@ -636,11 +1528,13 @@ const REST_COLORS = {
 let cachedTimeKey = "daytime";
 const TIME_VISUALS = {
   morning: {
-    windowGlass: "#ffe8a0",
-    windowGlow: "rgba(255,230,160,0.12)",
-    overlayColor: "rgba(255,200,100,0.04)",
+    windowGlass: "#d6ecff",
+    windowGlow: "rgba(140,190,255,0.10)",
+    overlayColor: "rgba(120,160,200,0.05)",
     vignetteAlpha: 0.08,
-    skyColors: ["#ffd080", "#87ceeb"],
+    outdoorShadeAlpha: 0.08,
+    outdoorShadeColor: "rgba(50,90,140,1)",
+    skyColors: ["#b8dcff", "#87b4e8"],
     starCount: 0,
   },
   daytime: {
@@ -648,26 +1542,79 @@ const TIME_VISUALS = {
     windowGlow: "rgba(180,220,255,0.08)",
     overlayColor: null,
     vignetteAlpha: 0.1,
+    outdoorShadeAlpha: 0.0,
+    outdoorShadeColor: null,
     skyColors: ["#87ceeb", "#b0d8f0"],
     starCount: 0,
   },
   dusk: {
-    windowGlass: "#f0a050",
-    windowGlow: "rgba(240,160,80,0.15)",
-    overlayColor: "rgba(180,100,50,0.06)",
-    vignetteAlpha: 0.15,
-    skyColors: ["#e87040", "#d4a060", "#6080b0"],
+    windowGlass: "#f6c08a",
+    windowGlow: "rgba(250,185,125,0.14)",
+    overlayColor: "rgba(190,110,80,0.06)",
+    vignetteAlpha: 0.18,
+    outdoorShadeAlpha: 0.1,
+    outdoorShadeColor: "rgba(75,85,105,1)",
+    skyColors: ["#f5b07a", "#e38a6a", "#6a84b8"],
     starCount: 0,
   },
   night: {
-    windowGlass: "#304870",
-    windowGlow: "rgba(80,120,180,0.06)",
-    overlayColor: "rgba(20,30,60,0.12)",
-    vignetteAlpha: 0.25,
-    skyColors: ["#1a1a3a", "#252550"],
+    windowGlass: "#2b3f62",
+    windowGlow: "rgba(80,120,180,0.05)",
+    overlayColor: "rgba(12,20,48,0.12)",
+    vignetteAlpha: 0.36,
+    outdoorShadeAlpha: 0.6,
+    outdoorShadeColor: "rgba(10,22,58,1)",
+    skyColors: ["#15183a", "#202045"],
     starCount: 5,
   },
 };
+
+// Outdoor shading mask (from outdoor tile layer or collision tag OD=16)
+const OUTDOOR_TILE = 16;
+const outdoorMaskCache = { focus: undefined, rest: undefined };
+const outdoorShadeCache = { focus: null, rest: null };
+
+function buildOutdoorMask(room) {
+  const rd = ROOM_DATA[room];
+  if (!rd) return null;
+  const dims = ROOM_DIMS[room] || ROOM_DIMS.focus;
+  const cols = dims.cols, rows = dims.rows;
+  const mask = document.createElement("canvas");
+  mask.width = cols * TILE;
+  mask.height = rows * TILE;
+  const mctx = mask.getContext("2d");
+  mctx.fillStyle = "rgba(0,0,0,1)";
+  let any = false;
+  const outdoor = rd.outdoorMask;
+  if (outdoor) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (outdoor[r] && outdoor[r][c]) {
+          mctx.fillRect(c * TILE, r * TILE, TILE, TILE);
+          any = true;
+        }
+      }
+    }
+    return any ? mask : null;
+  }
+  if (!rd.collision) return null;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (rd.collision[r] && rd.collision[r][c] === OUTDOOR_TILE) {
+        mctx.fillRect(c * TILE, r * TILE, TILE, TILE);
+        any = true;
+      }
+    }
+  }
+  return any ? mask : null;
+}
+
+function getOutdoorMask(room) {
+  if (outdoorMaskCache[room] !== undefined) return outdoorMaskCache[room];
+  const mask = buildOutdoorMask(room);
+  outdoorMaskCache[room] = mask || null;
+  return outdoorMaskCache[room];
+}
 
 // (ROOM_TILES removed - sprite coords now come from Tiled GIDs)
 
@@ -774,8 +1721,8 @@ function buildRestMap() {
 
 // Room data: collision (2D array of types), floorGIDs (flat array), objectLayers (array of flat arrays)
 const ROOM_DATA = {
-  focus: { collision: buildFocusMap(), floorGIDs: null, wallGIDs: null, objectLayers: [], aboveLayers: [], mapObjects: [] },
-  rest:  { collision: buildRestMap(),  floorGIDs: null, wallGIDs: null, objectLayers: [], aboveLayers: [], mapObjects: [] },
+  focus: { collision: buildFocusMap(), floorGIDs: null, wallGIDs: null, rugGIDs: null, objectLayers: [], aboveLayers: [], mapObjects: [], mapObjectsAbove: [], mapObjectsBelow: [] },
+  rest:  { collision: buildRestMap(),  floorGIDs: null, wallGIDs: null, rugGIDs: null, objectLayers: [], aboveLayers: [], mapObjects: [], mapObjectsAbove: [], mapObjectsBelow: [] },
 };
 
 // Parse 3-layer Tiled JSON into room data
@@ -804,14 +1751,27 @@ function parseTiledMapLayers(data) {
         result.collision = map;
         result.cols = layer.width;
         result.rows = layer.height;
+      } else if ((layer.name === "outdoor" || layer.name === "outdoor_mask") && layer.data) {
+        const mask = [];
+        for (let r = 0; r < layer.height; r++) {
+          const row = [];
+          for (let c = 0; c < layer.width; c++) {
+            const gid = layer.data[r * layer.width + c];
+            row.push(gid !== 0);
+          }
+          mask.push(row);
+        }
+        result.outdoorMask = mask;
       } else if (layer.name === "floor" && layer.data) {
         result.floorGIDs = layer.data;
         result.floorCols = layer.width;
       } else if (layer.name === "wall" && layer.data) {
         result.wallGIDs = layer.data;
         result.wallCols = layer.width;
+      } else if (layer.name === "rug" && layer.data) {
+        result.rugGIDs = layer.data;
       } else if (layer.type === "tilelayer" && layer.data &&
-                 layer.name !== "collision" && layer.name !== "floor" && layer.name !== "wall") {
+                 layer.name !== "collision" && layer.name !== "floor" && layer.name !== "wall" && layer.name !== "rug") {
         // "above*" layers render on top of players; everything else ("below*", "objects*") renders below
         const n = layer.name.toLowerCase();
         if (n === "above" || n.startsWith("above")) {
@@ -822,6 +1782,8 @@ function parseTiledMapLayers(data) {
           result.objectLayers.push(layer.data);
         }
       } else if (layer.type === "objectgroup" && layer.objects) {
+        const layerName = String(layer.name || "").toLowerCase();
+        const isAbove = layerName.includes("above");
         for (const obj of layer.objects) {
           if (!obj.gid) continue; // only tile objects
           const props = {};
@@ -829,25 +1791,32 @@ function parseTiledMapLayers(data) {
             for (const p of obj.properties) props[p.name] = p.value;
           }
           if (!result.mapObjects) result.mapObjects = [];
-          result.mapObjects.push({
+          if (!result.mapObjectsAbove) result.mapObjectsAbove = [];
+          if (!result.mapObjectsBelow) result.mapObjectsBelow = [];
+          const entry = {
+            id: obj.id,
             x: obj.x,
             y: obj.y - obj.height, // Tiled tile objects have y at bottom
             width: obj.width,
             height: obj.height,
             gid: obj.gid,
-            type: obj.type || "",
+            type: obj.type || obj.class || "",
             name: props.name || obj.name || "",
             allowedPlayer: props.allowedPlayer || "",
-          });
+            layer: layerName,
+          };
+          result.mapObjects.push(entry);
+          if (isAbove) result.mapObjectsAbove.push(entry);
+          else result.mapObjectsBelow.push(entry);
         }
       }
     }
   }
   visitLayers(data.layers);
 
-  // Build tileset registry (once, from first loaded map)
-  if (!tilesetRegistry.length && data.tilesets) {
-    tilesetRegistry = data.tilesets.map(ts => {
+  // Build tileset registry for this map
+  if (data.tilesets) {
+    result.tilesetRegistry = data.tilesets.map(ts => {
       const name = ts.source ? ts.source.replace(".tsj", "").replace(/.tsx$/, "").replace(/^:\//, "") : "";
       const info = TILESET_INFO[name] || {};
       const objInfo = OBJECT_TILESETS[name];
@@ -859,6 +1828,9 @@ function parseTiledMapLayers(data) {
         tileW: objInfo ? objInfo.tileW : 32,
         tileH: objInfo ? objInfo.tileH : 32,
         frameCount: objInfo ? objInfo.frameCount : 0,
+        isDoor: objInfo ? !!objInfo.isDoor : false,
+        openFrames: objInfo ? (objInfo.openFrames || objInfo.frameCount) : 0,
+        openDist: objInfo && objInfo.openDist ? objInfo.openDist * TILE : TILE * 3,
       };
     }).sort((a, b) => a.firstgid - b.firstgid);
   }
@@ -880,26 +1852,66 @@ function parseTiledMapLayers(data) {
       ROOM_DATA.focus.floorCols    = focusParsed.floorCols || focusParsed.cols;
       ROOM_DATA.focus.wallGIDs     = focusParsed.wallGIDs;
       ROOM_DATA.focus.wallCols     = focusParsed.wallCols || focusParsed.cols;
+      ROOM_DATA.focus.rugGIDs      = focusParsed.rugGIDs || null;
       ROOM_DATA.focus.objectLayers = focusParsed.objectLayers || [];
       ROOM_DATA.focus.aboveLayers  = focusParsed.aboveLayers || [];
       ROOM_DATA.focus.mapObjects   = focusParsed.mapObjects || [];
+      ROOM_DATA.focus.mapObjectsAbove = focusParsed.mapObjectsAbove || [];
+      ROOM_DATA.focus.mapObjectsBelow = focusParsed.mapObjectsBelow || [];
+      ROOM_DATA.focus.outdoorMask  = focusParsed.outdoorMask || null;
+      if (focusParsed.tilesetRegistry) roomTilesetRegistry.focus = focusParsed.tilesetRegistry;
       if (focusParsed.cols) ROOM_DIMS.focus = { cols: focusParsed.cols, rows: focusParsed.rows };
       if (restParsed.collision)  ROOM_DATA.rest.collision = restParsed.collision;
       ROOM_DATA.rest.floorGIDs    = restParsed.floorGIDs;
       ROOM_DATA.rest.floorCols    = restParsed.floorCols || restParsed.cols;
       ROOM_DATA.rest.wallGIDs     = restParsed.wallGIDs;
       ROOM_DATA.rest.wallCols     = restParsed.wallCols || restParsed.cols;
+      ROOM_DATA.rest.rugGIDs      = restParsed.rugGIDs || null;
       ROOM_DATA.rest.objectLayers = restParsed.objectLayers || [];
       ROOM_DATA.rest.aboveLayers  = restParsed.aboveLayers || [];
       ROOM_DATA.rest.mapObjects   = restParsed.mapObjects || [];
+      ROOM_DATA.rest.mapObjectsAbove = restParsed.mapObjectsAbove || [];
+      ROOM_DATA.rest.mapObjectsBelow = restParsed.mapObjectsBelow || [];
+      ROOM_DATA.rest.outdoorMask  = restParsed.outdoorMask || null;
+      if (restParsed.tilesetRegistry) roomTilesetRegistry.rest = restParsed.tilesetRegistry;
       if (restParsed.cols) ROOM_DIMS.rest = { cols: restParsed.cols, rows: restParsed.rows };
+      // Invalidate outdoor masks when maps reload
+      outdoorMaskCache.focus = undefined;
+      outdoorMaskCache.rest = undefined;
+      // Set initial active registry
+      tilesetRegistry = roomTilesetRegistry[currentRoom] || roomTilesetRegistry.focus;
       // Detect door tiles from collision layers
       if (focusParsed.collision) roomDoors.focus = findDoorsInCollision(focusParsed.collision, focusParsed.cols, focusParsed.rows);
       if (restParsed.collision) roomDoors.rest = findDoorsInCollision(restParsed.collision, restParsed.cols, restParsed.rows);
       console.log("[Maps] Loaded Tiled maps. Focus:", ROOM_DIMS.focus, "Rest:", ROOM_DIMS.rest, "Doors:", roomDoors);
+      // Wait for ALL tileset images to finish loading AND decoding
+      const allRegs = [...(roomTilesetRegistry.focus || []), ...(roomTilesetRegistry.rest || [])];
+      const pending = allRegs.map(ts => ts.img).filter(img => img && !img.complete);
+      if (pending.length > 0) {
+        await Promise.all(pending.map(img => new Promise(resolve => {
+          if (img.complete) { resolve(); return; }
+          img.addEventListener("load", resolve, { once: true });
+          img.addEventListener("error", resolve, { once: true });
+        })));
+      }
+      // Decode all images to ensure they're ready for canvas rendering
+      // (browser cache can set complete=true before image data is decoded)
+      const allImgs = allRegs.map(ts => ts.img).filter(img => img && img.complete);
+      await Promise.all(allImgs.map(img =>
+        typeof img.decode === "function" ? img.decode().catch(() => {}) : Promise.resolve()
+      ));
+      allRegs.forEach(ts => { if (ts.img) ts.img._loaded = true; });
+      gameReady = true;
+      dismissLoadingOverlay();
+    } else {
+      // fetch ok failed — show game with fallback rendering
+      gameReady = true;
+      dismissLoadingOverlay();
     }
   } catch (e) {
     console.warn("[Maps] Using fallback builders:", e);
+    gameReady = true;
+    dismissLoadingOverlay();
   }
 })();
 
@@ -910,7 +1922,54 @@ function getCurrentMap() {
 // --- Tile walkability ---
 function isWalkable(tileType, col, row) {
   if (tileType === 12) return isDoorOpenAt(col, row);
-  return tileType === 0 || tileType === 5 || tileType === 7 || tileType === 8;
+  return tileType === 0 || tileType === 5 || tileType === 6 || tileType === 7 || tileType === 8 || tileType === 9 || tileType === 13 || tileType === 14 || tileType === 15 || tileType === 16;
+}
+
+// BFS pathfinding on client collision map
+function findClientPath(sx, sy, ex, ey) {
+  const map = getCurrentMap();
+  const cols = getCols(), rows = getRows();
+  const sc = Math.max(0, Math.min(cols - 1, Math.floor(sx / TILE)));
+  const sr = Math.max(0, Math.min(rows - 1, Math.floor(sy / TILE)));
+  const ec = Math.max(0, Math.min(cols - 1, Math.floor(ex / TILE)));
+  const er = Math.max(0, Math.min(rows - 1, Math.floor(ey / TILE)));
+  if (sr === er && sc === ec) return [{ x: ex, y: ey }];
+  if (!isWalkable(map[er][ec], ec, er)) return null;
+
+  const key = (r, c) => r * cols + c;
+  const visited = new Set();
+  const parent = new Map();
+  const queue = [[sr, sc]];
+  visited.add(key(sr, sc));
+
+  while (queue.length > 0) {
+    const [r, c] = queue.shift();
+    if (r === er && c === ec) {
+      const path = [];
+      let ck = key(er, ec);
+      const sk = key(sr, sc);
+      while (ck !== sk) {
+        const cr = Math.floor(ck / cols);
+        const cc = ck % cols;
+        path.unshift({ x: cc * TILE + TILE / 2, y: cr * TILE + TILE / 2 });
+        ck = parent.get(ck);
+      }
+      // Add exact destination as final waypoint
+      path.push({ x: ex, y: ey });
+      return path;
+    }
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = r + dr, nc = c + dc;
+      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+      const nk = key(nr, nc);
+      if (visited.has(nk)) continue;
+      if (!isWalkable(map[nr][nc], nc, nr)) continue;
+      visited.add(nk);
+      parent.set(nk, key(r, c));
+      queue.push([nr, nc]);
+    }
+  }
+  return null;
 }
 
 function canMoveTo(x, y) {
@@ -931,11 +1990,218 @@ function canMoveTo(x, y) {
   return true;
 }
 
+// --- Unified seat table: room → { "r,c": { dir, dy, [dx], [manual] } } ---
+// Position-based (immune to GID changes when map is edited in Tiled).
+// dx: horizontal offset (only for manual multi-tile chairs, otherwise auto-centered to 0)
+// dy: vertical offset (controls sitting "height")
+const SEATS = {
+  focus: {
+    // 顶部一排3把: up
+    "2,26": { dir: "up", dy: -2 },
+    "2,29": { dir: "up", dy: -2 },
+    "2,35": { dir: "up", dy: -2 },
+    "2,38": { dir: "up", dx: -16, dy: -2, manual: true },
+    // 中部一排2把: down
+    "9,26": { dir: "down", dy: -6 },
+    "9,29": { dir: "down", dy: -6 },
+    // 右侧纵列4把: right
+    "11,36": { dir: "right", dy: -21 },
+    "13,36": { dir: "right", dy: -21 },
+    "15,36": { dir: "right", dy: -21 },
+    "17,36": { dir: "right", dy: -21 },
+    // 左下角4把: up
+    "12,4":  { dir: "up", dy: -8 },
+    "12,10": { dir: "up", dy: -8 },
+    "18,4":  { dir: "up", dy: -8 },
+    "18,10": { dir: "up", dy: -8 },
+    // 中间区域6把 (col=26/29)
+    "12,26": { dir: "up", dy: -8 },
+    "12,29": { dir: "up", dy: -8 },
+    "15,26": { dir: "down", dy: -6 },
+    "15,29": { dir: "down", dy: -6 },
+    "18,26": { dir: "up", dy: -8 },
+    "18,29": { dir: "up", dy: -8 },
+  },
+  rest: {
+    // 左上 zabuton 区
+    "3,11": { dir: "right", dy: 8 },
+    "3,14": { dir: "left", dy: 8 },
+    "4,7":  { dir: "left", dy: -14 },
+    "5,7":  { dir: "left", dy: -24 },
+    // 左上 futon
+    "4,2": { dir: "down" },
+    "4,3": { dir: "down" },
+    // 右上 sofa 区
+    "4,35": { dir: "up", dy: -4 },
+    "5,32": { dir: "up", dy: -4 },
+    "5,33": { dir: "up", dy: -4 },
+    "5,34": { dir: "up", dy: -4 },
+    "5,35": { dir: "up", dy: -4 },
+    // 上方中间 2格椅子
+    "5,25": { dir: "up", dx: 16, dy: 4, manual: true },
+    // 右侧中间2把 2格椅子
+    "8,36": { dir: "down", dx: -14, dy: 0, manual: true },
+    "8,38": { dir: "down", dx: -14, dy: 0, manual: true },
+    // 中间 sofa 群
+    "12,24": { dir: "down", dy: -8 },
+    "12,25": { dir: "down", dy: -8 },
+    "12,26": { dir: "down", dy: -8 },
+    "12,30": { dir: "down", dy: -8 },
+    "12,31": { dir: "down", dy: -8 },
+    "12,32": { dir: "down", dy: -4 },
+    "13,32": { dir: "down", dy: -16 },
+    // 左下角 chair
+    "15,2":  { dir: "right", dy: -2 },
+    "15,6":  { dir: "left", dy: -2 },
+    // 中下方4把 chair
+    "15,11": { dir: "right", dy: -2 },
+    "15,15": { dir: "left", dy: -2 },
+    "17,11": { dir: "right", dy: -2 },
+    "17,15": { dir: "left", dy: -2 },
+    // 右侧纵列 2格 sofa
+    "15,37": { dir: "left", dx: 16, dy: -16, manual: true },
+    "16,37": { dir: "left", dx: 16, dy: -16, manual: true },
+    "19,37": { dir: "left", dx: 16, dy: -16, manual: true },
+    "20,37": { dir: "left", dx: 16, dy: -16, manual: true },
+    // 左下角底部 chair
+    "18,2": { dir: "up", dy: 0 },
+    "18,3": { dir: "up", dy: 4 },
+    "18,4": { dir: "up", dy: 4 },
+    "20,2": { dir: "down", dy: 0 },
+    "20,4": { dir: "down", dy: 0 },
+    // 底部中间三把 chair（朝上）
+    "20,25": { dir: "up", dy: -8 },
+    "20,26": { dir: "up", dy: -8 },
+    "20,27": { dir: "up", dy: -8 },
+  },
+};
+
+// Default dy fallbacks by seat collision type and direction
+const SEAT_DY_DEFAULTS = {
+  7:  { up: -8,  down: 0,   left: -20, right: -20 }, // chair
+  9:  { up: -4,  down: -4,  left: -16, right: -16 }, // sofa
+  13: { up: 0,   down: 0,   left: -8,  right: -8  }, // zabuton
+  14: { up: 0,   down: 0,   left: 0,   right: 0   }, // futon
+  15: { up: 0,   down: 0,   left: 0,   right: 0   }, // yoga_mat
+};
+
+function getSeatOffset(room, r, c, direction, seatType) {
+  const entry = SEATS[room] && SEATS[room][r + "," + c];
+  if (entry) {
+    return { dx: entry.manual ? (entry.dx || 0) : 0, dy: entry.dy || 0 };
+  }
+  const defaults = SEAT_DY_DEFAULTS[seatType] || SEAT_DY_DEFAULTS[7];
+  return { dx: 0, dy: defaults[direction] || 0 };
+}
+
+// Get visual position adjusted for sit offset (label, fire, gifts use this)
+function getPlayerVisualPos(player) {
+  if (!player.isSitting) return { x: player.x, y: player.y };
+  const room = player.room || currentRoom;
+  const dir = player.direction || "down";
+  const sType = player.seatType || lookupSeatType(room, player.x, player.y);
+  const off = getSeatOffset(room, Math.floor(player.y / TILE), Math.floor(player.x / TILE), dir, sType);
+  return { x: player.x + off.dx, y: player.y + off.dy };
+}
+
+// Look up seat collision type (7/9/13/14) from position
+function lookupSeatType(room, x, y) {
+  const rd = ROOM_DATA[room];
+  if (!rd || !rd.collision) return 0;
+  const r = Math.floor(y / TILE);
+  const c = Math.floor(x / TILE);
+  const t = rd.collision[r] && rd.collision[r][c];
+  return (t === 7 || t === 9 || t === 13 || t === 14 || t === 15) ? t : 0;
+}
+
+// Infer chair/sofa facing direction from surrounding tiles.
+// Chairs (type 7) face TOWARD adjacent desks — sit at the desk.
+// Sofas (type 9) face AWAY from adjacent walls — sit looking into the room.
+function inferSeatDirection(map, r, c, rows, cols) {
+  const above = r > 0 ? map[r - 1][c] : -1;
+  const below = r < rows - 1 ? map[r + 1][c] : -1;
+  const left  = c > 0 ? map[r][c - 1] : -1;
+  const right = c < cols - 1 ? map[r][c + 1] : -1;
+  const t = map[r][c]; // 7=chair, 9=sofa, 13=zabuton
+  const isBlk = (v) => v === 1 || v === 2 || v === 3 || v === 11;
+
+  if (t === 7) {
+    // Chair: face TOWARD blocking tile (desk/table)
+    if (isBlk(above) && !isBlk(below)) return "up";
+    if (isBlk(below) && !isBlk(above)) return "down";
+    if (isBlk(left) && !isBlk(right)) return "left";
+    if (isBlk(right) && !isBlk(left)) return "right";
+  } else {
+    // Sofa: face AWAY from wall/edge
+    const wallAbove = isBlk(above) || above === -1;
+    const wallBelow = isBlk(below) || below === -1;
+    const wallLeft  = isBlk(left)  || left  === -1;
+    const wallRight = isBlk(right) || right === -1;
+    if (wallAbove && !wallBelow) return "down";
+    if (wallBelow && !wallAbove) return "up";
+    if (wallLeft && !wallRight)  return "right";
+    if (wallRight && !wallLeft)  return "left";
+  }
+  return "down"; // default
+}
+
+// Check if player is near a sittable tile (type 7=chair, 9=sofa)
+function getNearestSittable(x, y) {
+  const map = getCurrentMap();
+  const cols = getCols(), rows = getRows();
+  const pc = Math.floor(x / TILE);
+  const pr = Math.floor(y / TILE);
+  // Check player's tile and adjacent tiles, return the closest seat
+  let best = null, bestDist = Infinity;
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      const r = pr + dr, c = pc + dc;
+      if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+      const t = map[r][c];
+      if (t === 7 || t === 9 || t === 13 || t === 14 || t === 15) {
+        const cx = c * TILE + TILE / 2;
+        const cy = r * TILE + TILE / 2;
+        const dist = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
+        if (dist < TILE * 1.2 && dist < bestDist) {
+          bestDist = dist;
+          const entry = SEATS[currentRoom] && SEATS[currentRoom][r + "," + c];
+          const dir = (entry && entry.dir) || inferSeatDirection(map, r, c, rows, cols);
+          best = { col: c, row: r, x: cx, y: cy, direction: dir, seatType: t };
+        }
+      }
+    }
+  }
+  return best;
+}
+
+// Stand up: clear sitting state and snap to tile center
+function standUp() {
+  if (!localPlayer) return;
+  localSitting = false;
+  localPlayer.isSitting = false;
+  localPlayer.seatType = 0;
+  localPlayer.x = Math.floor(localPlayer.x / TILE) * TILE + TILE / 2;
+  localPlayer.y = Math.floor(localPlayer.y / TILE) * TILE + TILE / 2;
+  emitPlayerSit(false);
+  socket.emit("playerMove", { x: localPlayer.x, y: localPlayer.y, direction: localPlayer.direction });
+}
+
+function emitPlayerSit(sitting) {
+  if (!localPlayer) return;
+  socket.emit("playerSit", { sitting, x: localPlayer.x, y: localPlayer.y });
+  if (sitting) {
+    const x = Math.round(localPlayer.x);
+    const y = Math.round(localPlayer.y);
+    console.log(`[SIT] local position: ${x},${y} (room: ${currentRoom})`);
+  }
+}
+
 function isOnPortal(x, y) {
   const map = getCurrentMap();
+  if (!map) return false;
   const col = Math.floor(x / TILE);
   const row = Math.floor(y / TILE);
-  if (row < 0 || row >= getRows() || col < 0 || col >= getCols()) return false;
+  if (row < 0 || row >= map.length || col < 0 || !map[row] || col >= map[row].length) return false;
   return map[row][col] === 8;
 }
 
@@ -943,190 +2209,320 @@ function isOnPortal(x, y) {
 // DRAWING
 // ============================================================
 
+// --- Offscreen canvas cache for static tile layers ---
+const _tileCache = { focus: null, rest: null, aboveFocus: null, aboveRest: null, groundFocus: null, groundRest: null, objFocus: null, objRest: null, objWalkFocus: null, objWalkRest: null, room: null };
+
+function invalidateTileCache() {
+  _tileCache.focus = null;
+  _tileCache.rest = null;
+  _tileCache.aboveFocus = null;
+  _tileCache.aboveRest = null;
+  _tileCache.groundFocus = null;
+  _tileCache.groundRest = null;
+  _tileCache.objFocus = null;
+  _tileCache.objRest = null;
+  _tileCache.objWalkFocus = null;
+  _tileCache.objWalkRest = null;
+}
+
+function _buildLayerCache(room, layers, floorGIDs, wallGIDs, skipBlankCheck, extraGIDs, collisionFilter) {
+  const reg = roomTilesetRegistry[room];
+  if (!reg || !reg.length) return null;
+  // Check all tileset images are loaded
+  for (const ts of reg) { if (ts.img && !ts.img._loaded) return null; }
+  const rd = ROOM_DATA[room];
+  const dims = ROOM_DIMS[room] || ROOM_DIMS.focus;
+  const cols = dims.cols, rows = dims.rows;
+  const w = cols * TILE, h = rows * TILE;
+  const offCanvas = document.createElement("canvas");
+  offCanvas.width = w; offCanvas.height = h;
+  const offCtx = offCanvas.getContext("2d");
+  offCtx.imageSmoothingEnabled = false;
+  // Temporarily swap ctx so drawTileByGID draws to offscreen
+  const prevCtx = ctx;
+  const prevReg = tilesetRegistry;
+  ctx = offCtx;
+  tilesetRegistry = reg;
+  const collision = collisionFilter ? rd.collision : null;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (collision && !collisionFilter(collision[r] ? collision[r][c] : 0)) continue;
+      const x = c * TILE, y = r * TILE, idx = r * cols + c;
+      if (floorGIDs && floorGIDs[idx]) drawTileByGID(floorGIDs[idx], x, y);
+      if (extraGIDs && extraGIDs[idx]) drawTileByGID(extraGIDs[idx], x, y);
+      if (wallGIDs && wallGIDs[idx]) drawTileByGID(wallGIDs[idx], x, y);
+      if (layers) {
+        for (const ld of layers) { if (ld[idx]) drawTileByGID(ld[idx], x, y); }
+      }
+    }
+  }
+  ctx = prevCtx;
+  tilesetRegistry = prevReg;
+  // Verify cache isn't blank (safety net for undecoded images)
+  if (!skipBlankCheck) {
+    try {
+      const mid = Math.min(cols, rows) > 2 ? TILE * 2 + TILE / 2 : TILE / 2;
+      const px = offCtx.getImageData(mid, mid, 1, 1).data;
+      if (px[3] === 0) return null;
+    } catch (e) {}
+  }
+  return offCanvas;
+}
+
+function getTileCache(room) {
+  const key = room;
+  if (_tileCache[key]) return _tileCache[key];
+  const rd = ROOM_DATA[room];
+  const cached = _buildLayerCache(room, rd.objectLayers, rd.floorGIDs, rd.wallGIDs);
+  if (cached) _tileCache[key] = cached;
+  return cached;
+}
+
+function getAboveCache(room) {
+  const key = "above" + room.charAt(0).toUpperCase() + room.slice(1);
+  if (_tileCache[key]) return _tileCache[key];
+  const rd = ROOM_DATA[room];
+  if (!rd.aboveLayers || !rd.aboveLayers.length) return null;
+  const cached = _buildLayerCache(room, rd.aboveLayers, null, null);
+  if (cached) _tileCache[key] = cached;
+  return cached;
+}
+
+function getGroundCache(room) {
+  const key = "ground" + room.charAt(0).toUpperCase() + room.slice(1);
+  if (_tileCache[key]) return _tileCache[key];
+  const rd = ROOM_DATA[room];
+  // Ground = floor + rug (walls are Y-sorted with entities)
+  const cached = _buildLayerCache(room, null, rd.floorGIDs, null, true, rd.rugGIDs);
+  if (cached) _tileCache[key] = cached;
+  return cached;
+}
+
+// Walkable tile positions: object tiles here are always below entities (chairs, sofas, etc.)
+const WALKABLE_TILES = new Set([0, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16]);
+const _isWalkable = ct => WALKABLE_TILES.has(ct);
+const _isBlocking = ct => !WALKABLE_TILES.has(ct);
+
+function getWalkableObjCache(room) {
+  const key = "objWalk" + room.charAt(0).toUpperCase() + room.slice(1);
+  if (_tileCache[key]) return _tileCache[key];
+  const reg = roomTilesetRegistry[room];
+  if (!reg || !reg.length) return null;
+  for (const ts of reg) { if (ts.img && !ts.img._loaded) return null; }
+  const rd = ROOM_DATA[room];
+  if (!rd.objectLayers || !rd.objectLayers.length) return null;
+  const cached = _buildLayerCache(room, rd.objectLayers, null, null, true, null, _isWalkable);
+  if (cached) _tileCache[key] = cached;
+  return cached;
+}
+
+function getObjectCache(room) {
+  const key = "obj" + room.charAt(0).toUpperCase() + room.slice(1);
+  if (_tileCache[key]) return _tileCache[key];
+  const reg = roomTilesetRegistry[room];
+  if (!reg || !reg.length) return null;
+  for (const ts of reg) { if (ts.img && !ts.img._loaded) return null; }
+  const rd = ROOM_DATA[room];
+  // Blocking tiles: wall + object layers at non-walkable positions (Y-sorted)
+  const cached = _buildLayerCache(room, rd.objectLayers, null, rd.wallGIDs, true, null, _isBlocking);
+  if (cached) _tileCache[key] = cached;
+  return cached;
+}
+
 function drawRoom() {
   const rd = ROOM_DATA[currentRoom];
   const collision = rd.collision;
   const colors = currentRoom === "focus" ? FOCUS_COLORS : REST_COLORS;
+  // Switch to this room's tileset registry
+  tilesetRegistry = roomTilesetRegistry[currentRoom] || [];
   const hasSprites = tilesetRegistry.length > 0;
 
-  const curCols = getCols();
-  const curRows = getRows();
-  for (let r = 0; r < curRows; r++) {
-    for (let c = 0; c < curCols; c++) {
-      const x = c * TILE;
-      const y = r * TILE;
-      const idx = r * curCols + c;
-      const ct = collision[r][c]; // collision type
+  // Try ground-only cache first (object layers drawn separately for Y-sorting)
+  const groundCached = hasSprites ? getGroundCache(currentRoom) : null;
+  if (groundCached) {
+    ctx.drawImage(groundCached, 0, 0);
+  } else {
+    // Per-tile fallback rendering (no cache yet or no sprites)
+    const curCols = getCols();
+    const curRows = getRows();
+    for (let r = 0; r < curRows; r++) {
+      for (let c = 0; c < curCols; c++) {
+        const x = c * TILE;
+        const y = r * TILE;
+        const idx = r * curCols + c;
+        const ct = collision[r][c];
+        const onDoor = isDoorTile(c, r);
 
-      // Skip all per-tile rendering for door positions (door sprite drawn in separate pass)
-      const onDoor = isDoorTile(c, r);
-
-      // --- 1. Floor layer ---
-      let floorDrawn = false;
-      if (!onDoor) {
-        if (hasSprites && rd.floorGIDs) {
-          floorDrawn = drawTileByGID(rd.floorGIDs[idx], x, y);
-        }
-        if (!floorDrawn && !hasSprites) {
-          {
-            ctx.fillStyle = colors.floor;
-            ctx.fillRect(x, y, TILE, TILE);
-            if (ct === 0 || ct === 7 || ct === 8) {
-              const hash = (r * 31 + c * 17) % 8;
-              if (hash < 3) {
-                ctx.fillStyle = colors.floorDark;
-                ctx.fillRect(x, y, TILE, TILE);
-              }
-              ctx.fillStyle = "rgba(0,0,0,0.07)";
-              ctx.fillRect(x, y, TILE, 1);
-              ctx.fillRect(x, y, 1, TILE);
-            }
+        let floorDrawn = false;
+        if (!onDoor) {
+          if (hasSprites && rd.floorGIDs) {
+            floorDrawn = drawTileByGID(rd.floorGIDs[idx], x, y);
           }
-        }
-      }
-
-      // --- 1b. Wall layer ---
-      if (!onDoor && hasSprites && rd.wallGIDs) {
-        drawTileByGID(rd.wallGIDs[idx], x, y);
-      }
-
-      // --- 2. Objects layers ---
-      let objDrawn = false;
-      if (!onDoor && hasSprites && rd.objectLayers.length) {
-        for (const layerData of rd.objectLayers) {
-          if (layerData[idx]) {
-            if (drawTileByGID(layerData[idx], x, y)) objDrawn = true;
-          }
-        }
-      }
-
-      // --- 3. Animation overlays + programmatic fallback ---
-      // When sprites are loaded, collision layer is pure logic (no colored blocks).
-      // Only portal glow and window sky/stars animate as overlays.
-      if (hasSprites) {
-        if (ct === 11) {
-          drawWindowTint(x, y);
-        }
-      } else {
-        // No sprites: full programmatic rendering (fallback)
-        switch (ct) {
-          case 1: {
-            ctx.fillStyle = colors.wall;
-            ctx.fillRect(x, y, TILE, TILE);
-            ctx.fillStyle = colors.wallDark;
-            ctx.fillRect(x, y + 15, TILE, 1);
-            if ((r + c) % 2 === 0) {
-              ctx.fillRect(x + 14, y, 1, 15);
-            } else {
-              ctx.fillRect(x + 14, y + 16, 1, 16);
-            }
-            ctx.fillStyle = colors.wallTop;
-            ctx.fillRect(x, y, TILE, 2);
-            ctx.fillStyle = "rgba(0,0,0,0.12)";
-            ctx.fillRect(x, y + TILE - 2, TILE, 2);
-            if (r === 0 && c > 1 && c < curCols - 2 && c % 4 === 0) {
-              drawWindow(x, y);
-            }
-            break;
-          }
-          case 2: {
-            ctx.fillStyle = colors.desk;
-            ctx.fillRect(x + 2, y + 4, TILE - 4, TILE - 6);
-            ctx.fillStyle = colors.deskTop;
-            ctx.fillRect(x + 2, y + 4, TILE - 4, 6);
-            ctx.fillStyle = "#333";
-            ctx.fillRect(x + 8, y + 10, 16, 12);
-            const screenFlicker = 0.85 + 0.15 * Math.sin(Date.now() / 2000 + c * 3.7);
-            const base = currentRoom === "focus" ? [136, 204, 255] : [136, 221, 136];
-            ctx.fillStyle = `rgb(${Math.floor(base[0]*screenFlicker)},${Math.floor(base[1]*screenFlicker)},${Math.floor(base[2]*screenFlicker)})`;
-            ctx.fillRect(x + 9, y + 11, 14, 10);
-            break;
-          }
-          case 3:
-            ctx.fillStyle = colors.bookshelf;
-            ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
-            for (let s = 0; s < 3; s++) {
-              const sy = y + 6 + s * 9;
-              ctx.fillStyle = "#5a4020";
-              ctx.fillRect(x + 3, sy + 7, TILE - 6, 2);
-              for (let b = 0; b < 4; b++) {
-                ctx.fillStyle = colors.bookColors[(c + s + b) % colors.bookColors.length];
-                ctx.fillRect(x + 5 + b * 6, sy, 5, 7);
+          if (!floorDrawn && !hasSprites) {
+            {
+              ctx.fillStyle = colors.floor;
+              ctx.fillRect(x, y, TILE, TILE);
+              if (ct === 0 || ct === 7 || ct === 8) {
+                const hash = (r * 31 + c * 17) % 8;
+                if (hash < 3) {
+                  ctx.fillStyle = colors.floorDark;
+                  ctx.fillRect(x, y, TILE, TILE);
+                }
+                ctx.fillStyle = "rgba(0,0,0,0.07)";
+                ctx.fillRect(x, y, TILE, 1);
+                ctx.fillRect(x, y, 1, TILE);
               }
             }
-            break;
-          case 4:
-            ctx.fillStyle = colors.plantPot;
-            ctx.fillRect(x + 10, y + 20, 12, 10);
-            ctx.fillStyle = colors.plant;
-            ctx.beginPath();
-            ctx.arc(x + 16, y + 14, 10, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = "#4a8858";
-            ctx.beginPath();
-            ctx.arc(x + 12, y + 11, 6, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(x + 20, y + 12, 5, 0, Math.PI * 2);
-            ctx.fill();
-            break;
-          case 5:
-            ctx.fillStyle = colors.rug;
-            ctx.fillRect(x, y, TILE, TILE);
-            ctx.fillStyle = colors.rugAlt || colors.rug;
-            if ((r + c) % 2 === 0) {
-              ctx.fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
-            }
-            break;
-          case 7:
-            ctx.fillStyle = colors.chair;
-            ctx.fillRect(x + 6, y + 6, 20, 20);
-            ctx.fillStyle = "#7ab87a";
-            ctx.fillRect(x + 8, y + 8, 16, 16);
-            break;
-          case 8:
-            drawPortal(x, y, colors);
-            break;
-          case 9:
-            ctx.fillStyle = colors.sofa || "#7a3868";
-            ctx.fillRect(x + 2, y + 4, TILE - 4, TILE - 6);
-            ctx.fillStyle = colors.sofaTop || "#8a4878";
-            ctx.fillRect(x + 4, y + 6, TILE - 8, TILE - 10);
-            ctx.fillStyle = "#d8a0b8";
-            ctx.fillRect(x + 8, y + 10, 16, 10);
-            break;
-          case 10: {
-            ctx.fillStyle = colors.coffeeMachine || "#484848";
-            ctx.fillRect(x + 4, y + 4, TILE - 8, TILE - 6);
-            ctx.fillStyle = colors.coffeeTop || "#5a5a5a";
-            ctx.fillRect(x + 4, y + 4, TILE - 8, 8);
-            ctx.fillStyle = "#fff";
-            ctx.fillRect(x + 12, y + 16, 8, 8);
-            const st = Date.now() / 500;
-            ctx.lineWidth = 1;
-            ctx.strokeStyle = "rgba(255,255,255,0.4)";
-            ctx.beginPath();
-            ctx.moveTo(x + 15, y + 14);
-            ctx.quadraticCurveTo(x + 13 + Math.sin(st) * 3, y + 8, x + 15 + Math.sin(st * 0.6) * 2, y + 2);
-            ctx.stroke();
-            ctx.strokeStyle = "rgba(255,255,255,0.2)";
-            ctx.beginPath();
-            ctx.moveTo(x + 17, y + 14);
-            ctx.quadraticCurveTo(x + 19 + Math.sin(st + 2) * 2.5, y + 9, x + 17 + Math.sin(st * 0.8 + 1) * 1.5, y + 4);
-            ctx.stroke();
-            break;
-          }
-          case 12: {
-            // Door fallback (no sprites): simple colored rectangle
-            const doorOpen = isDoorOpenAt(c, r);
-            ctx.fillStyle = doorOpen ? "rgba(180,220,240,0.3)" : "rgba(180,220,240,0.7)";
-            ctx.fillRect(x + 2, y, TILE - 4, TILE);
-            ctx.strokeStyle = "#8ab0c0";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(x + 2, y, TILE - 4, TILE);
-            break;
           }
         }
+
+        if (!onDoor && hasSprites && rd.wallGIDs) {
+          drawTileByGID(rd.wallGIDs[idx], x, y);
+        }
+
+        let objDrawn = false;
+        if (!onDoor && hasSprites && rd.objectLayers.length) {
+          for (const layerData of rd.objectLayers) {
+            if (layerData[idx]) {
+              if (drawTileByGID(layerData[idx], x, y)) objDrawn = true;
+            }
+          }
+        }
+
+        if (hasSprites) {
+          // if (ct === 11) drawWindowTint(x, y);
+        } else {
+          switch (ct) {
+            case 1: {
+              ctx.fillStyle = colors.wall;
+              ctx.fillRect(x, y, TILE, TILE);
+              ctx.fillStyle = colors.wallDark;
+              ctx.fillRect(x, y + 15, TILE, 1);
+              if ((r + c) % 2 === 0) {
+                ctx.fillRect(x + 14, y, 1, 15);
+              } else {
+                ctx.fillRect(x + 14, y + 16, 1, 16);
+              }
+              ctx.fillStyle = colors.wallTop;
+              ctx.fillRect(x, y, TILE, 2);
+              ctx.fillStyle = "rgba(0,0,0,0.12)";
+              ctx.fillRect(x, y + TILE - 2, TILE, 2);
+              if (r === 0 && c > 1 && c < curCols - 2 && c % 4 === 0) {
+                drawWindow(x, y);
+              }
+              break;
+            }
+            case 2: {
+              ctx.fillStyle = colors.desk;
+              ctx.fillRect(x + 2, y + 4, TILE - 4, TILE - 6);
+              ctx.fillStyle = colors.deskTop;
+              ctx.fillRect(x + 2, y + 4, TILE - 4, 6);
+              ctx.fillStyle = "#333";
+              ctx.fillRect(x + 8, y + 10, 16, 12);
+              const screenFlicker = 0.85 + 0.15 * Math.sin(Date.now() / 2000 + c * 3.7);
+              const base = currentRoom === "focus" ? [136, 204, 255] : [136, 221, 136];
+              ctx.fillStyle = `rgb(${Math.floor(base[0]*screenFlicker)},${Math.floor(base[1]*screenFlicker)},${Math.floor(base[2]*screenFlicker)})`;
+              ctx.fillRect(x + 9, y + 11, 14, 10);
+              break;
+            }
+            case 3:
+              ctx.fillStyle = colors.bookshelf;
+              ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
+              for (let s = 0; s < 3; s++) {
+                const sy = y + 6 + s * 9;
+                ctx.fillStyle = "#5a4020";
+                ctx.fillRect(x + 3, sy + 7, TILE - 6, 2);
+                for (let b = 0; b < 4; b++) {
+                  ctx.fillStyle = colors.bookColors[(c + s + b) % colors.bookColors.length];
+                  ctx.fillRect(x + 5 + b * 6, sy, 5, 7);
+                }
+              }
+              break;
+            case 4:
+              ctx.fillStyle = colors.plantPot;
+              ctx.fillRect(x + 10, y + 20, 12, 10);
+              ctx.fillStyle = colors.plant;
+              ctx.beginPath();
+              ctx.arc(x + 16, y + 14, 10, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.fillStyle = "#4a8858";
+              ctx.beginPath();
+              ctx.arc(x + 12, y + 11, 6, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.beginPath();
+              ctx.arc(x + 20, y + 12, 5, 0, Math.PI * 2);
+              ctx.fill();
+              break;
+            case 5:
+              ctx.fillStyle = colors.rug;
+              ctx.fillRect(x, y, TILE, TILE);
+              ctx.fillStyle = colors.rugAlt || colors.rug;
+              if ((r + c) % 2 === 0) {
+                ctx.fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
+              }
+              break;
+            case 7:
+              ctx.fillStyle = colors.chair;
+              ctx.fillRect(x + 6, y + 6, 20, 20);
+              ctx.fillStyle = "#7ab87a";
+              ctx.fillRect(x + 8, y + 8, 16, 16);
+              break;
+            case 8:
+              drawPortal(x, y, colors);
+              break;
+            case 9:
+              ctx.fillStyle = colors.sofa || "#7a3868";
+              ctx.fillRect(x + 2, y + 4, TILE - 4, TILE - 6);
+              ctx.fillStyle = colors.sofaTop || "#8a4878";
+              ctx.fillRect(x + 4, y + 6, TILE - 8, TILE - 10);
+              ctx.fillStyle = "#d8a0b8";
+              ctx.fillRect(x + 8, y + 10, 16, 10);
+              break;
+            case 10: {
+              ctx.fillStyle = colors.coffeeMachine || "#484848";
+              ctx.fillRect(x + 4, y + 4, TILE - 8, TILE - 6);
+              ctx.fillStyle = colors.coffeeTop || "#5a5a5a";
+              ctx.fillRect(x + 4, y + 4, TILE - 8, 8);
+              ctx.fillStyle = "#fff";
+              ctx.fillRect(x + 12, y + 16, 8, 8);
+              const st = Date.now() / 500;
+              ctx.lineWidth = 1;
+              ctx.strokeStyle = "rgba(255,255,255,0.4)";
+              ctx.beginPath();
+              ctx.moveTo(x + 15, y + 14);
+              ctx.quadraticCurveTo(x + 13 + Math.sin(st) * 3, y + 8, x + 15 + Math.sin(st * 0.6) * 2, y + 2);
+              ctx.stroke();
+              ctx.strokeStyle = "rgba(255,255,255,0.2)";
+              ctx.beginPath();
+              ctx.moveTo(x + 17, y + 14);
+              ctx.quadraticCurveTo(x + 19 + Math.sin(st + 2) * 2.5, y + 9, x + 17 + Math.sin(st * 0.8 + 1) * 1.5, y + 4);
+              ctx.stroke();
+              break;
+            }
+            case 12: {
+              const doorOpen = isDoorOpenAt(c, r);
+              ctx.fillStyle = doorOpen ? "rgba(180,220,240,0.3)" : "rgba(180,220,240,0.7)";
+              ctx.fillRect(x + 2, y, TILE - 4, TILE);
+              ctx.strokeStyle = "#8ab0c0";
+              ctx.lineWidth = 1;
+              ctx.strokeRect(x + 2, y, TILE - 4, TILE);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Dynamic overlays on top of cached tiles (window tint changes with time-of-day)
+  if (groundCached && hasSprites) {
+    const curCols = getCols();
+    const curRows = getRows();
+    const collision = rd.collision;
+    for (let r = 0; r < curRows; r++) {
+      for (let c = 0; c < curCols; c++) {
+        // if (collision[r][c] === 11) drawWindowTint(c * TILE, r * TILE);
+        if (collision[r][c] === 8) drawPortalLabel(c * TILE, r * TILE, colors);
       }
     }
   }
@@ -1147,6 +2543,11 @@ function drawAboveLayers() {
   if (!rd.aboveLayers || !rd.aboveLayers.length) return;
   const hasSprites = tilesetRegistry.length > 0;
   if (!hasSprites) return;
+  const cached = getAboveCache(currentRoom);
+  if (cached) {
+    ctx.drawImage(cached, 0, 0);
+    return;
+  }
   const curCols = getCols();
   const curRows = getRows();
   for (let r = 0; r < curRows; r++) {
@@ -1275,6 +2676,7 @@ function drawWindow(x, y) {
 let portalLabelDrawnThisFrame = false;
 function drawPortalLabel(x, y, colors) {
   if (portalLabelDrawnThisFrame) return;
+  if (currentRoom !== "focus") return;
   portalLabelDrawnThisFrame = true;
 
   const map = getCurrentMap();
@@ -1369,22 +2771,24 @@ function drawPortal(x, y, colors) {
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  // Small static label (draw at native resolution)
-  const label = currentRoom === "focus" ? t("portalToLounge") : t("portalToFocus");
-  ctx.save();
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const ps = gameToScreen(px + pw / 2, py - 10);
-  ctx.font = "bold 16px 'MiSans', sans-serif";
-  ctx.letterSpacing = "0.32px";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  const textWidth = ctx.measureText(label).width;
-  ctx.fillStyle = "rgba(0,0,0,0.5)";
-  ctx.fillRect(ps.x - textWidth / 2 - 6, ps.y - 8, textWidth + 12, 16);
-  ctx.fillStyle = "#fff";
-  ctx.globalAlpha = 0.8;
-  ctx.fillText(label, ps.x, ps.y);
-  ctx.restore();
+  // Keep portal text only in Focus room.
+  if (currentRoom === "focus") {
+    const label = t("portalToLounge");
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const ps = gameToScreen(px + pw / 2, py - 10);
+    ctx.font = "bold 16px 'MiSans', sans-serif";
+    ctx.letterSpacing = "0.32px";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const textWidth = ctx.measureText(label).width;
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(ps.x - textWidth / 2 - 6, ps.y - 8, textWidth + 12, 16);
+    ctx.fillStyle = "#fff";
+    ctx.globalAlpha = 0.8;
+    ctx.fillText(label, ps.x, ps.y);
+    ctx.restore();
+  }
 }
 
 // ============================================================
@@ -1405,6 +2809,9 @@ const STATUS_EMOJI = {
   browsing: "\u{1F4F1}",
   focusing: "\u{1F525}",
   daydreaming: "\u{1F4AD}",
+  writing: "\u{270F}\u{FE0F}",
+  creating: "\u{1F3A8}",
+  exercising: "\u{1F3CB}\u{FE0F}",
 };
 
 const BODY_COLORS = [
@@ -1427,7 +2834,7 @@ function hashCharacter(id) {
     hash = ((hash << 5) - hash) + id.charCodeAt(i);
     hash |= 0;
   }
-  return CHARACTER_NAMES[Math.abs(hash) % CHARACTER_NAMES.length];
+  return { preset: (Math.abs(hash) % PREMADE_COUNT) + 1 };
 }
 
 // Lighten a hex color for use on dark backgrounds
@@ -1443,7 +2850,7 @@ function lightenColor(hex, amount) {
 
 // Sprite animation direction offsets (each direction = 6 frames in a 24-col sheet)
 const SPRITE_DIR_OFFSET = { right: 0, up: 6, left: 12, down: 18 };
-const SPRITE_IDLE_MS = 200; // ms per idle frame
+const SPRITE_IDLE_MS = 600; // ms per idle frame (~3.6s breathing cycle)
 const SPRITE_RUN_MS  = 100; // ms per run frame
 
 function getPlayerAnimState(player) {
@@ -1460,13 +2867,14 @@ function getPlayerAnimState(player) {
   const now = Date.now();
   const dx = player.x - st.prevX;
   const dy = player.y - st.prevY;
-  st.moving = (dx !== 0 || dy !== 0);
+  st.moving = !player.isSitting && (dx !== 0 || dy !== 0);
   st.prevX = player.x;
   st.prevY = player.y;
 
+  const maxFrames = (player.isSitting && player.seatType === 15) ? 14 : 6;
   const interval = st.moving ? SPRITE_RUN_MS : SPRITE_IDLE_MS;
   if (now - st.lastFrameTime >= interval) {
-    st.frame = (st.frame + 1) % 6;
+    st.frame = (st.frame + 1) % maxFrames;
     st.lastFrameTime = now;
   }
   return st;
@@ -1475,25 +2883,71 @@ function getPlayerAnimState(player) {
 function drawPlayerBody(player, isLocal) {
   const { x, y } = player;
 
-  // Shadow
-  ctx.fillStyle = "rgba(0,0,0,0.18)";
-  ctx.beginPath();
-  ctx.ellipse(x, y + 12, 10, 3.5, 0, 0, Math.PI * 2);
-  ctx.fill();
+  // Shadow (skip when sitting)
+  if (!player.isSitting) {
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.beginPath();
+    ctx.ellipse(x, y + 16, 12, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
-  // Determine sprite
-  const charName = player.character || hashCharacter(player.id);
-  const animState = getPlayerAnimState(player);
-  const sheetKey = animState.moving ? `char_${charName}_run` : `char_${charName}_idle`;
-  const sheet = spriteImages[sheetKey];
+  // Get character spritesheet (premade or composite)
+  const config = player.character || hashCharacter(player.id);
+  const sheet = getCharacterSheet(config);
   if (!sheet || !sheet._loaded) return;
 
+  const animState = getPlayerAnimState(player);
   const dir = player.direction || "down";
-  const col = (SPRITE_DIR_OFFSET[dir] || 0) + animState.frame;
-  const sx = col * 32;
 
-  // Sprite frames are 32x64 (full sheet height). Feet at ~row 58, aligned with shadow at y+12.
-  ctx.drawImage(sheet, sx, 0, 32, 64, x - 16, y - 46, 32, 64);
+  // Sit sprite layout differs from walk/idle: only right (cols 0-5) & left (cols 6-11).
+  // For up/down we fall back to idle (back/front view at this scale looks fine).
+  // Type 13 (zabuton) uses sit2 (cross-legged) animation.
+  let row, sitCol;
+  if (player.isSitting) {
+    const st = player.seatType || lookupSeatType(player.room || currentRoom, x, y);
+    if (st === 15) {
+      // Yoga mat: exercise animation (row 11, 14 frames per direction: right/up/left/down)
+      const EXERCISE_DIR_OFFSET = { right: 0, up: 14, left: 28, down: 42 };
+      row = ANIM_ROWS.exercise;
+      sitCol = (EXERCISE_DIR_OFFSET[dir] || 0) + animState.frame;
+    } else if (st === 14) {
+      // Futon: sleep animation (row 3, cols 0-5, single direction)
+      row = ANIM_ROWS.sleep;
+      sitCol = animState.frame;
+    } else if (dir === "right" || dir === "left") {
+      row = ANIM_ROWS.sit;
+      sitCol = (dir === "right" ? 0 : 6) + animState.frame;
+    } else {
+      row = ANIM_ROWS.idle;
+      sitCol = (SPRITE_DIR_OFFSET[dir] || 0) + animState.frame;
+    }
+  } else {
+    row = animState.moving ? ANIM_ROWS.walk : ANIM_ROWS.idle;
+    sitCol = (SPRITE_DIR_OFFSET[dir] || 0) + animState.frame;
+  }
+
+  // Each frame is 32x64 (head + body = 2 rows of 32px cells)
+  const sx = sitCol * 32;
+  const sy = row * 64;
+  // Sitting sprites: use per-seat offset from position table
+  let sitDx = 0, sitDy = 0;
+  if (player.isSitting) {
+    const room = player.room || currentRoom;
+    const seatR = Math.floor(y / TILE);
+    const seatC = Math.floor(x / TILE);
+    const sType = player.seatType || lookupSeatType(room, x, y);
+    const off = getSeatOffset(room, seatR, seatC, dir, sType);
+    sitDx = off.dx;
+    sitDy = off.dy;
+  }
+  // 朝上坐: 裁掉底部腿部，加黑线模拟椅子边缘
+  const sitUpCrop = player.isSitting && (dir === "up") && player.seatType !== 14 && player.seatType !== 15 ? 5 : 0;
+  const drawH = 64 - sitUpCrop;
+  ctx.drawImage(sheet, sx, sy, 32, drawH, x - 16 + sitDx, y - 46 + sitDy, 32, drawH);
+  if (sitUpCrop > 0) {
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(x - 16 + sitDx + 8, y - 46 + sitDy + drawH, 16, 2);
+  }
 }
 
 // Convert game coords to screen coords (bypassing canvas transform)
@@ -1505,59 +2959,53 @@ function gameToScreen(gx, gy) {
 }
 
 function drawPlayerLabel(player) {
-  const { x, y, name, status } = player;
+  const { name, status } = player;
+  const vp = getPlayerVisualPos(player);
 
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const isLocal = player.id === myId;
   const nameText = name || "???";
-  const px = 4, py = 4;
-  const fade = 12;
+  const px = 8, py = 4;
 
   // Name label
   ctx.font = "bold 16px 'MiSans', sans-serif";
   ctx.letterSpacing = "0.32px";
-  ctx.textAlign = "left";
+  ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   const nameWidth = Math.ceil(ctx.measureText(nameText).width);
-  const s = gameToScreen(x, y);
-  const lw = nameWidth + px * 2 + fade * 2;
+  const s = gameToScreen(vp.x, vp.y);
+  const lw = nameWidth + px * 2;
   const lh = 16 + py * 2;
   const lx = Math.round(s.x - lw / 2);
-  const ly = Math.round(s.y - 50 * gameScale - py);
-  const grad = ctx.createLinearGradient(lx, 0, lx + lw, 0);
-  grad.addColorStop(0, "rgba(0,0,0,0)");
-  grad.addColorStop(fade * 0.4 / lw, "rgba(0,0,0,0.15)");
-  grad.addColorStop(fade / lw, "rgba(0,0,0,0.5)");
-  grad.addColorStop(0.5, "rgba(0,0,0,0.55)");
-  grad.addColorStop(1 - fade / lw, "rgba(0,0,0,0.5)");
-  grad.addColorStop(1 - fade * 0.4 / lw, "rgba(0,0,0,0.15)");
-  grad.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(lx, ly, lw, lh);
+  const ly = Math.round(s.y - 52 * gameScale - py);
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.beginPath();
+  ctx.roundRect(lx, ly, lw, lh, 4);
+  ctx.fill();
   ctx.fillStyle = isLocal ? "#fff" : "#4DA6FF";
-  ctx.fillText(nameText, lx + fade + px, ly + lh / 2);
+  ctx.fillText(nameText, s.x, ly + lh / 2);
 
-  // Status emoji above name label
+  // Status emoji above name label (manually centered to avoid glyph offset)
   const emojiY = ly - 4;
+  ctx.font = "16px 'MiSans', sans-serif";
+  ctx.textBaseline = "bottom";
+  ctx.textAlign = "left";
   if (player.isFocusing) {
-    ctx.font = "16px 'MiSans', sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "bottom";
-    ctx.fillText(STATUS_EMOJI[player.focusCategory] || STATUS_EMOJI[status] || "", s.x, emojiY);
+    const emojiStr = STATUS_EMOJI[player.focusCategory] || STATUS_EMOJI[status] || "";
+    const ew = ctx.measureText(emojiStr).width;
+    ctx.fillText(emojiStr, s.x - ew / 2, emojiY);
   } else if (player.id === myId && autoWalking) {
-    ctx.font = "16px 'MiSans', sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "bottom";
     ctx.fillStyle = "#fff";
-    ctx.fillText(entranceWalking ? t("checkingIn") : t("grabCoffee"), s.x, emojiY);
+    const walkStr = t("grabCoffee");
+    const ew = ctx.measureText(walkStr).width;
+    ctx.fillText(walkStr, s.x - ew / 2, emojiY);
   } else if (player.id === myId && emojiSuppressUntil && Date.now() < emojiSuppressUntil) {
     // suppressed
   } else {
-    ctx.font = "16px 'MiSans', sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "bottom";
-    ctx.fillText(STATUS_EMOJI[status] || "", s.x, emojiY);
+    const emojiStr = STATUS_EMOJI[status] || "";
+    const ew = ctx.measureText(emojiStr).width;
+    ctx.fillText(emojiStr, s.x - ew / 2, emojiY);
   }
   ctx.restore();
 }
@@ -1571,21 +3019,67 @@ function drawChatBubble(player) {
     return;
   }
 
+  // Nearby-scoped bubbles only visible when local player is within range
+  if (bubble.scope === "nearby" && localPlayer) {
+    const dx = Math.abs(player.x - localPlayer.x);
+    const dy = Math.abs(player.y - localPlayer.y);
+    if (dx > 128 || dy > 128) return;
+  }
+
   const alpha = elapsed > BUBBLE_DURATION - 1000 ? (BUBBLE_DURATION - elapsed) / 1000 : 1;
 
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.globalAlpha = alpha;
-  ctx.font = "16px 'MiSans', sans-serif";
+  ctx.font = "14px 'MiSans', sans-serif";
   ctx.letterSpacing = "0.32px";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "bottom";
-  const s = gameToScreen(player.x, player.y);
-  const by = Math.round(s.y - 72 * gameScale);
-  ctx.fillStyle = "rgba(0,0,0,0.7)";
-  ctx.fillText(bubble.text, s.x + 1, by + 1);
-  ctx.fillStyle = "#fff";
-  ctx.fillText(bubble.text, s.x, by);
+
+  // Measure and truncate to max width
+  const maxW = 160;
+  const padX = 8, padY = 5;
+  let displayText = bubble.text;
+  if (ctx.measureText(displayText).width > maxW) {
+    while (displayText.length > 1 && ctx.measureText(displayText + "...").width > maxW) {
+      displayText = displayText.slice(0, -1);
+    }
+    displayText += "...";
+  }
+  const tw = ctx.measureText(displayText).width;
+  const bw = tw + padX * 2;
+  const bh = 14 + padY * 2;
+  const arrowH = 5;
+
+  const cvp = getPlayerVisualPos(player);
+  const s = gameToScreen(cvp.x, cvp.y);
+  const bx = Math.round(s.x - bw / 2);
+  const by = Math.round(s.y - 72 * gameScale) - bh - arrowH;
+
+  // Bubble background
+  const r = 6;
+  ctx.fillStyle = "rgba(22,33,62,0.88)";
+  ctx.beginPath();
+  ctx.moveTo(bx + r, by);
+  ctx.lineTo(bx + bw - r, by);
+  ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
+  ctx.lineTo(bx + bw, by + bh - r);
+  ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+  // Arrow
+  ctx.lineTo(bx + bw / 2 + arrowH, by + bh);
+  ctx.lineTo(bx + bw / 2, by + bh + arrowH);
+  ctx.lineTo(bx + bw / 2 - arrowH, by + bh);
+  ctx.lineTo(bx + r, by + bh);
+  ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
+  ctx.lineTo(bx, by + r);
+  ctx.quadraticCurveTo(bx, by, bx + r, by);
+  ctx.closePath();
+  ctx.fill();
+
+  // Text (left-aligned)
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  const textColor = bubble.scope === "nearby" ? "#7ee6a8" : "#fff";
+  ctx.fillStyle = textColor;
+  ctx.fillText(displayText, bx + padX, by + bh / 2);
   ctx.restore();
 }
 
@@ -1595,6 +3089,20 @@ function drawChatBubble(player) {
 
 const OBJ_FRAME_MS = 200; // ms per animation frame
 let petInteractTimer = 0; // cooldown to prevent spam
+const CAMPFIRE_INTERACT_DIST = 80;
+const campfireStates = { focus: {}, rest: {} }; // room -> { id: lit }
+const campfireLightCache = { focus: null, rest: null };
+const CAMPFIRE_FRAME_MS = 320; // slower campfire animation
+const CAMPFIRE_LIGHT_BASE = 192; // px, multiple of 8
+const CAMPFIRE_LIGHT_AMP = 8; // px, multiple of 4
+const CAMPFIRE_LIGHT_PERIOD_MS = 6000; // ms, multiple of 8
+const CAMPFIRE_LIGHT_ALPHA = 0.9;
+const CAMPFIRE_LIGHT_TIME_ALPHA = {
+  night: 1.0,
+  dusk: 0.85,
+  morning: 0.6,
+  daytime: 0.4,
+};
 
 function findTilesetForGID(gid) {
   for (let i = tilesetRegistry.length - 1; i >= 0; i--) {
@@ -1603,30 +3111,136 @@ function findTilesetForGID(gid) {
   return null;
 }
 
-function drawMapObjects() {
+function isCampfireObj(obj, ts) {
+  if (!obj || !ts || !ts.name) return false;
+  const tsName = ts.name.toLowerCase();
+  const objName = String(obj.name || "").toLowerCase();
+  const objType = String(obj.type || "").toLowerCase();
+  return tsName.includes("campfire") || objName.includes("campfire") || objType.includes("campfire");
+}
+
+function getObjDrawSize(obj, ts) {
+  const w = obj && typeof obj.width === "number" && obj.width > 0 ? obj.width : ts.tileW;
+  const h = obj && typeof obj.height === "number" && obj.height > 0 ? obj.height : ts.tileH;
+  return { w, h };
+}
+
+function getNearestCampfire() {
   const objs = ROOM_DATA[currentRoom].mapObjects;
+  if (!objs || !objs.length || !localPlayer) return null;
+  let best = null;
+  let bestDist = Infinity;
+  for (const obj of objs) {
+    const ts = findTilesetForGID(obj.gid);
+    if (!isCampfireObj(obj, ts)) continue;
+    const { w, h } = getObjDrawSize(obj, ts);
+    const cx = obj.x + w / 2;
+    const cy = obj.y + h / 2;
+    const dist = Math.abs(localPlayer.x - cx) + Math.abs(localPlayer.y - cy);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = { id: obj.id, x: cx, y: cy, dist };
+    }
+  }
+  return best;
+}
+
+const DOOR_ANIM_SPEED = 0.02;     // door open/close speed per frame (0→1 in ~50 frames)
+
+function drawMapObjects(objs = ROOM_DATA[currentRoom].mapObjects) {
   if (!objs || !objs.length) return;
 
   const now = Date.now();
+  const butterflyState = getButterflyState();
+
+  const px = localPlayer ? localPlayer.x : 0;
+  const py = localPlayer ? localPlayer.y : 0;
 
   for (const obj of objs) {
     const ts = findTilesetForGID(obj.gid);
     if (!ts || !ts.img || !ts.img._loaded || !ts.frameCount) continue;
+    const isButterfly = isButterflyObj(obj, ts);
+    if (isButterfly && !butterflyState.visible) continue;
+    if (isFrogObj(obj, ts) && !isFrogActiveTime()) continue;
+    if (isFishObj(obj, ts) && !isFishActiveTime()) continue;
+    const campfire = isCampfireObj(obj, ts);
+    if (campfire) continue; // draw campfires in a dedicated pass above
 
-    const frame = Math.floor(now / OBJ_FRAME_MS) % ts.frameCount;
-    const localId = frame; // animate from first frame of tileset
-    const sx = (localId % ts.columns) * ts.tileW;
-    const sy = Math.floor(localId / ts.columns) * ts.tileH;
+    let frame;
+    if (ts.isDoor) {
+      // Doors: smooth open/close based on player proximity
+      if (obj._doorProgress == null) obj._doorProgress = 0;
+      const objCX = obj.x + ts.tileW / 2;
+      const objCY = obj.y + ts.tileH / 2;
+      const dist = Math.abs(px - objCX) + Math.abs(py - objCY);
+      const target = dist < ts.openDist ? 1 : 0;
+      if (obj._prevDoorTarget != null && obj._prevDoorTarget !== target) {
+        if (ts.name === "door_glass_sliding" || ts.name === "jp_door_sliding") {
+          playDoorSlidingSound();
+        } else if (ts.name === "studyRoomDoor" && target === 1) {
+          playDoorWoodenSound();
+        }
+      }
+      obj._prevDoorTarget = target;
+      if (obj._doorProgress < target) obj._doorProgress = Math.min(target, obj._doorProgress + DOOR_ANIM_SPEED);
+      else if (obj._doorProgress > target) obj._doorProgress = Math.max(target, obj._doorProgress - DOOR_ANIM_SPEED);
+      // Only use the opening frames (first half of spritesheet for round-trip animations)
+      frame = Math.round(obj._doorProgress * (ts.openFrames - 1));
+    } else if (obj.type === "pet") {
+      // Napping pet: mostly still, occasional slow tail wag
+      if (!obj._napNext) obj._napNext = now + 3000 + Math.random() * 5000;
+      if (!obj._napPlaying) obj._napPlaying = false;
+      if (!obj._napPlaying) {
+        // Still — resting on frame 0
+        if (now >= obj._napNext) {
+          obj._napPlaying = true;
+          obj._napStart = now;
+        }
+        frame = 0;
+      } else {
+        // One slow tail wag cycle (~300ms per frame)
+        const elapsed = now - obj._napStart;
+        frame = Math.floor(elapsed / 300);
+        if (frame >= ts.frameCount) {
+          // Cycle done, rest again for 4-8 seconds
+          frame = 0;
+          obj._napPlaying = false;
+          obj._napNext = now + 4000 + Math.random() * 4000;
+        }
+      }
+    } else {
+      // Ambient objects: always loop (coffee steams etc.)
+      if (isButterfly && butterflyState.moveToWater) {
+        frame = getButterflyWaterFrame(obj, ts, now);
+      } else if (isButterfly && butterflyState.static) {
+        frame = 0;
+      } else {
+        frame = Math.floor(now / OBJ_FRAME_MS) % ts.frameCount;
+      }
+    }
 
-    ctx.drawImage(ts.img, sx, sy, ts.tileW, ts.tileH, obj.x, obj.y, ts.tileW, ts.tileH);
+    const sx = (frame % ts.columns) * ts.tileW;
+    const sy = Math.floor(frame / ts.columns) * ts.tileH;
+    const { w, h } = getObjDrawSize(obj, ts);
+    let dx = obj.x;
+    let dy = obj.y;
+    if (isButterfly && butterflyState.moveToWater) {
+      const waterPos = getButterflyWaterPos(currentRoom, w, h);
+      if (waterPos) {
+        dx = waterPos.x;
+        dy = waterPos.y;
+      }
+    }
+    ctx.drawImage(ts.img, sx, sy, ts.tileW, ts.tileH, dx, dy, w, h);
 
-    // Draw name label for pets
-    if (obj.name && obj.type === "pet") {
+    // Draw name label for pets (hide for banli)
+    if (obj.name && obj.type === "pet" && obj.name.toLowerCase() !== "banli") {
       ctx.save();
       ctx.font = "bold 7px MiSans, sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = "rgba(0,0,0,0.4)";
-      const labelX = obj.x + ts.tileW / 2;
+      const { w } = getObjDrawSize(obj, ts);
+      const labelX = obj.x + w / 2;
       const labelY = obj.y - 4;
       const tw = ctx.measureText(obj.name).width;
       ctx.fillRect(labelX - tw / 2 - 2, labelY - 6, tw + 4, 8);
@@ -1635,6 +3249,95 @@ function drawMapObjects() {
       ctx.restore();
     }
   }
+}
+
+function drawCampfireObjects() {
+  const objs = ROOM_DATA[currentRoom].mapObjects;
+  if (!objs || !objs.length) return;
+  const now = Date.now();
+  for (const obj of objs) {
+    const ts = findTilesetForGID(obj.gid);
+    if (!ts || !ts.img || !ts.img._loaded || !ts.frameCount) continue;
+    if (!isCampfireObj(obj, ts)) continue;
+    if (!(campfireStates[currentRoom] && campfireStates[currentRoom][obj.id])) continue;
+
+    // Campfire: use frames 1-3, loop forward (1-2-3-1...)
+    const frame = Math.floor(now / CAMPFIRE_FRAME_MS) % 3;
+    const sx = (frame % ts.columns) * ts.tileW;
+    const sy = Math.floor(frame / ts.columns) * ts.tileH;
+    const { w, h } = getObjDrawSize(obj, ts);
+    ctx.drawImage(ts.img, sx, sy, ts.tileW, ts.tileH, obj.x, obj.y, w, h);
+  }
+}
+
+function drawCampfireLight() {
+  const objs = ROOM_DATA[currentRoom].mapObjects;
+  if (!objs || !objs.length) return;
+  const states = campfireStates[currentRoom];
+  if (!states) return;
+
+  let anyLit = false;
+  for (const obj of objs) {
+    if (states[obj.id]) { anyLit = true; break; }
+  }
+  if (!anyLit) return;
+
+  const dims = ROOM_DIMS[currentRoom];
+  if (!dims) return;
+  const w = dims.cols * TILE;
+  const h = dims.rows * TILE;
+
+  let lightCanvas = campfireLightCache[currentRoom];
+  if (!lightCanvas || lightCanvas.width !== w || lightCanvas.height !== h) {
+    lightCanvas = document.createElement("canvas");
+    lightCanvas.width = w;
+    lightCanvas.height = h;
+    campfireLightCache[currentRoom] = lightCanvas;
+  }
+
+  const lctx = lightCanvas.getContext("2d");
+  lctx.clearRect(0, 0, w, h);
+
+  const timeAlpha = CAMPFIRE_LIGHT_TIME_ALPHA[cachedTimeKey] ?? 0.6;
+  if (timeAlpha <= 0) return;
+
+  const now = performance.now();
+  for (const obj of objs) {
+    if (!states[obj.id]) continue;
+    const ts = findTilesetForGID(obj.gid);
+    if (!ts) continue;
+    const { w, h } = getObjDrawSize(obj, ts);
+    const cx = obj.x + w / 2;
+    const cy = obj.y + h / 2 + 8;
+    const t = (now + obj.id * 128) / CAMPFIRE_LIGHT_PERIOD_MS;
+    const radiusRaw = CAMPFIRE_LIGHT_BASE + CAMPFIRE_LIGHT_AMP * Math.sin(t);
+    const radius = Math.max(32, Math.round(radiusRaw / 4) * 4); // keep multiples of 4
+
+    const grad = lctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    // Campfire falloff: warm orange core → amber → ember red → transparent
+    grad.addColorStop(0.0, "rgba(255,170,90,0.8)");
+    grad.addColorStop(0.2, "rgba(240,130,60,0.55)");
+    grad.addColorStop(0.5, "rgba(200,90,45,0.32)");
+    grad.addColorStop(0.8, "rgba(140,60,30,0.16)");
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    lctx.fillStyle = grad;
+    lctx.beginPath();
+    lctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    lctx.fill();
+  }
+
+  const mask = getOutdoorMask(currentRoom);
+  if (mask) {
+    lctx.globalCompositeOperation = "destination-in";
+    lctx.drawImage(mask, 0, 0);
+    lctx.globalCompositeOperation = "source-over";
+  }
+
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = CAMPFIRE_LIGHT_ALPHA * timeAlpha;
+  ctx.drawImage(lightCanvas, 0, 0);
+  ctx.restore();
 }
 
 // ============================================================
@@ -1647,8 +3350,329 @@ let catMiuTimer = 0;
 let catMiuX = 0;
 let catMiuY = 0;
 let catSleepPetTimer = 0;
+let catLastRubHeartTime = 0;
+
+// --- Cat Sprite Sheet Configuration (orange_3.png, 1024x544, 32x32 per frame) ---
+// Layout: 32 cols × 17 rows (row 0 = header labels), only cols 0-23 contain sprites
+// 6 animation blocks × 4 cols each = 24 cols of sprite data
+// Directions: 2 rows per dir (main row + overflow row)
+// Row order (top → bottom): down, down-left, left, up-left, up, up-right, right, down-right
+// We only use 4 dirs; right reuses left row and flips to save memory
+const CAT_SPRITE = {
+  frameW: 32,
+  frameH: 32,
+  // Each animation block = exactly 4 columns
+  anims: {
+    sit:  { startCol: 0,  frames: 7, dualRow: true, dirFrames: { down: 6, up: 7, left: 6, right: 6 } },  // SITTING DOWN (cols 0-3 + overflow)
+    look: { startCol: 4,  frames: 4 },  // LOOKING AROUND (cols 4-7)
+    lay:  { startCol: 8,  frames: 8, dualRow: true },  // LAYING DOWN (cols 8-11, 2 rows: 0-3 main, 4-7 overflow)
+    walk: { startCol: 12, frames: 4 },  // WALKING        (cols 12-15)
+    run:  { startCol: 16, frames: 4 },  // RUNNING        (cols 16-19)
+    run2: { startCol: 20, frames: 4 },  // RUNNING 2.0    (cols 20-23)
+  },
+  // Row index for each direction (main row; overflow = row+1)
+  dirs: { down: 1, left: 5, up: 9, right: 5 },  // right reuses left row, flipped in draw code
+};
+const CAT_SPRITE_TOP_CROP = 1;
+
+// Map cat behavior states → sprite animation names
+const CAT_STATE_TO_ANIM = {
+  sit:           "sit",
+  sleep:         "lay",
+  groom:         "look",
+  stretch:       "sit",
+  yawn:          "sit",
+  wander:        "walk",
+  curious:       "run2",
+  idle:          "sit",
+  gift_deliver:  "run2",
+  zoomies:       "run2",
+  leg_rub:       "walk",
+  stare:         "look",
+};
+
+// Cat direction tracking (accumulated delta to avoid flickering on diagonal movement)
+let catPrevX = 0;
+let catPrevY = 0;
+let catDirAccX = 0;        // accumulated X movement since last direction sample
+let catDirAccY = 0;        // accumulated Y movement since last direction sample
+let catDirLastTime = 0;    // last time direction was sampled
+let catDirection = "down";
+const CAT_DIR_SAMPLE_MS = 200; // sample direction every 200ms from accumulated delta
+let catLastMoveTime = 0;
+let catSpriteFrame = 0;
+let catSpriteLastTime = 0;
+const CAT_SPRITE_IDLE_MS = 250;  // ms per frame for idle/sitting animations
+const CAT_SPRITE_MOVE_MS = 120;  // ms per frame for walking/running animations
+
+// Sit transition state machine
+// move→sit: play "sit" frames 0→3, then hold frame 3
+// sit→move: play "sit" frames 3→0, then switch to walk/run
+let catSitPhase = "none";      // "none" | "down" | "hold" | "up"
+let catSitFrame = 0;           // current sit animation frame (0-3)
+let catSitFrameTime = 0;       // last frame advance timestamp
+let catPrevAnimName = "";       // previous resolved animation name
+const CAT_SIT_FRAME_MS = 150;  // ms per frame for sit/stand transition
 
 function drawCatBody() {
+  if (catData.room !== currentRoom) return;
+
+  const { x, y, state } = catData;
+  catAnimFrame += 0.02; // Keep incrementing for UI effects (Zzz float, etc.)
+
+  // --- Cat direction tracking (accumulated delta, sampled periodically) ---
+  const movingState = state === "wander" || state === "curious" || state === "gift_deliver" || state === "zoomies" || state === "leg_rub";
+  const dx = catData.x - catPrevX;
+  const dy = catData.y - catPrevY;
+  catDirAccX += dx;
+  catDirAccY += dy;
+  catPrevX = catData.x;
+  catPrevY = catData.y;
+
+  const now = Date.now();
+  if (Math.abs(dx) + Math.abs(dy) > 0.2) catLastMoveTime = now;
+  const movingRecently = now - catLastMoveTime < 300;
+  const animStillMoving = now - catLastMoveTime < 600; // longer grace for animation switching
+  const isMoving = movingState && movingRecently;
+
+  if (isMoving && now - catDirLastTime >= CAT_DIR_SAMPLE_MS) {
+    const adx = Math.abs(catDirAccX);
+    const ady = Math.abs(catDirAccY);
+    if (adx > 1 || ady > 1) {
+      // Horizontal movement takes priority; only use up/down for pure vertical
+      if (adx > 1) {
+        catDirection = catDirAccX > 0 ? "right" : "left";
+      } else {
+        catDirection = catDirAccY > 0 ? "down" : "up";
+      }
+    }
+    catDirAccX = 0;
+    catDirAccY = 0;
+    catDirLastTime = now;
+  }
+
+  // Server-sent face direction override (e.g. face down when greeting at entrance)
+  if (!isMoving && catData.faceDir) {
+    catDirection = catData.faceDir;
+  }
+
+  // --- Update sprite animation frame (for looping anims like walk/run) ---
+  const frameInterval = isMoving ? CAT_SPRITE_MOVE_MS : CAT_SPRITE_IDLE_MS;
+  if (now - catSpriteLastTime >= frameInterval) {
+    catSpriteFrame++;
+    catSpriteLastTime = now;
+  }
+
+  // --- Sit transition state machine ---
+  let animName = CAT_STATE_TO_ANIM[state] || "sit";
+  if (movingState && !animStillMoving) animName = "sit";
+  const isSitAnim = animName === "sit";
+  const isMovementAnim = animName === "walk" || animName === "run2";
+
+  // Sit animation last frame depends on direction (up/down=6, left/right=5)
+  const sitAnim = CAT_SPRITE.anims.sit;
+  const sitLastFrame = (sitAnim.dirFrames && sitAnim.dirFrames[catDirection]
+    ? sitAnim.dirFrames[catDirection] : sitAnim.frames) - 1;
+
+  // First frame: initialize without playing transition
+  if (catPrevAnimName === "") {
+    catPrevAnimName = animName;
+    if (isSitAnim) { catSitPhase = "hold"; catSitFrame = sitLastFrame; }
+  }
+
+  // Detect animation transitions (only when not already in a sit transition)
+  if (animName !== catPrevAnimName && catSitPhase !== "down" && catSitPhase !== "up") {
+    const wasMovement = catPrevAnimName === "walk" || catPrevAnimName === "run2";
+    if (wasMovement && isSitAnim) {
+      // Movement → Sit: play sit-down (frames 0→last)
+      catSitPhase = "down";
+      catSitFrame = 0;
+      catSitFrameTime = now;
+    } else if (catSitPhase === "hold" && isMovementAnim) {
+      // Sit(hold) → Movement: play stand-up (frames last→0)
+      catSitPhase = "up";
+      catSitFrame = sitLastFrame;
+      catSitFrameTime = now;
+    } else {
+      // Other transitions (sit↔lay, sit↔look, etc.): instant switch
+      catSpriteFrame = 0;
+      catSpriteLastTime = now;
+      catPrevAnimName = animName;
+      if (isSitAnim) {
+        // Entering sit from non-movement: go directly to hold (fully seated)
+        catSitPhase = "hold";
+        catSitFrame = sitLastFrame;
+      } else {
+        catSitPhase = "none";
+      }
+    }
+  }
+
+  // Advance sit transition frames
+  if (catSitPhase === "down") {
+    if (now - catSitFrameTime >= CAT_SIT_FRAME_MS) {
+      catSitFrame++;
+      catSitFrameTime = now;
+    }
+    if (catSitFrame >= sitLastFrame) {
+      catSitFrame = sitLastFrame;
+      catSitPhase = "hold";
+      catPrevAnimName = animName;
+    }
+  } else if (catSitPhase === "up") {
+    if (now - catSitFrameTime >= CAT_SIT_FRAME_MS) {
+      catSitFrame--;
+      catSitFrameTime = now;
+    }
+    if (catSitFrame <= 0) {
+      catSitFrame = 0;
+      catSitPhase = "none";
+      catPrevAnimName = animName;
+    }
+  }
+
+  // Resolve which animation + frame to actually draw
+  let drawAnimName, drawFrameIdx;
+  if (catSitPhase === "down" || catSitPhase === "up") {
+    drawAnimName = "sit";
+    drawFrameIdx = catSitFrame;
+  } else if (catSitPhase === "hold") {
+    drawAnimName = "sit";
+    drawFrameIdx = sitLastFrame;  // Stay on last frame (fully seated)
+  } else {
+    drawAnimName = animName;
+    const anim = CAT_SPRITE.anims[drawAnimName];
+    if (anim) {
+      const totalFrames = (anim.dirFrames && anim.dirFrames[catDirection])
+        ? anim.dirFrames[catDirection] : anim.frames;
+      let rawFrame;
+
+      // Lay/sleep: play once to last frame, then hold (no loop)
+      if (drawAnimName === "lay") {
+        rawFrame = Math.min(catSpriteFrame, totalFrames - 1);
+      } else {
+        rawFrame = catSpriteFrame % totalFrames;
+      }
+
+      drawFrameIdx = rawFrame;
+    } else {
+      drawFrameIdx = 0;
+    }
+    // Update prevAnimName for non-transition states
+    catPrevAnimName = animName;
+  }
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.1)";
+  ctx.beginPath();
+  ctx.ellipse(x, y + 2, 8, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // --- Draw cat sprite from orange_3 sheet ---
+  const sheet = spriteImages["cat_orange3"];
+  if (sheet && sheet._loaded) {
+    const drawAnim = CAT_SPRITE.anims[drawAnimName];
+    if (drawAnim) {
+      const dirRow = CAT_SPRITE.dirs[catDirection] || CAT_SPRITE.dirs.down;
+      // For dualRow anims (lay): frames 0-3 on main row, frames 4-7 on overflow row (+1)
+      let colIdx = drawFrameIdx;
+      let rowIdx = dirRow;
+      if (drawAnim.dualRow && drawFrameIdx >= 4) {
+        colIdx = drawFrameIdx - 4;
+        rowIdx = dirRow + 1;
+      }
+      const sx = (drawAnim.startCol + colIdx) * CAT_SPRITE.frameW;
+      const sy = rowIdx * CAT_SPRITE.frameH;
+
+      const prevSmoothing = ctx.imageSmoothingEnabled;
+      ctx.imageSmoothingEnabled = false;
+      const drawX = x - CAT_SPRITE.frameW / 2;
+      const drawY = y + 8 - CAT_SPRITE.frameH;
+      const srcY = sy + CAT_SPRITE_TOP_CROP;
+      const srcH = CAT_SPRITE.frameH - CAT_SPRITE_TOP_CROP;
+      const dstY = drawY + CAT_SPRITE_TOP_CROP;
+      const dstH = CAT_SPRITE.frameH - CAT_SPRITE_TOP_CROP;
+      if (catDirection === "right") {
+        // Flip horizontally for right direction (reuse left-facing row)
+        ctx.save();
+        ctx.translate(x, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(
+          sheet,
+          sx, srcY, CAT_SPRITE.frameW, srcH,
+          -CAT_SPRITE.frameW / 2, dstY,
+          CAT_SPRITE.frameW, dstH
+        );
+        ctx.restore();
+      } else {
+        ctx.drawImage(
+          sheet,
+          sx, srcY, CAT_SPRITE.frameW, srcH,
+          drawX, dstY,
+          CAT_SPRITE.frameW, dstH
+        );
+      }
+      ctx.imageSmoothingEnabled = prevSmoothing;
+    }
+  }
+
+  // Zzz for sleeping state
+  if (state === "sleep") {
+    const zFloat = Math.sin(catAnimFrame) * 2;
+    ctx.font = "16px 'MiSans', sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.textAlign = "center";
+    ctx.fillText("z", x + 12, y - 18 + zFloat);
+    ctx.fillText("z", x + 16, y - 23 + zFloat * 0.7);
+  }
+
+  // Track sleeping pet timer for UI effects
+  if (catSleepPetTimer > 0) {
+    catSleepPetTimer--;
+  }
+
+  // Gift rendering - position adjusts based on facing direction
+  if (catData.gift) {
+    let gx, gy;
+    if (isMoving) {
+      // Gift at mouth level (run2 face front offset ≈ +6)
+      if (catDirection === "right")     { gx = x + 10; gy = y - 10; }
+      else if (catDirection === "left") { gx = x - 10; gy = y - 10; }
+      else if (catDirection === "up")   { gx = x; gy = y - 16; }
+      else                              { gx = x; gy = y - 6; }
+    } else {
+      // Gift placed at front paws (direction-aware)
+      if (catDirection === "right")     { gx = x + 8; gy = y + 1; }
+      else if (catDirection === "left") { gx = x - 8; gy = y + 1; }
+      else if (catDirection === "down") { gx = x - 4; gy = y + 2; }
+      else                              { gx = x; gy = y + 2; }
+    }
+    // Flip gift when cat faces left so it doesn't point into the face
+    if (catDirection === "left") {
+      ctx.save();
+      ctx.translate(gx, 0);
+      ctx.scale(-1, 1);
+      drawGift(catData.gift, 0, gy);
+      ctx.restore();
+    } else {
+      drawGift(catData.gift, gx, gy);
+    }
+  }
+
+  // Leg rub: spawn small hearts periodically near the target player
+  if (state === "leg_rub" && catData.rubTarget) {
+    if (now - catLastRubHeartTime > 1200) {
+      catLastRubHeartTime = now;
+      const rubPlayer = catData.rubTarget === myId ? localPlayer : otherPlayers[catData.rubTarget];
+      if (rubPlayer) {
+        spawnOneHeart(rubPlayer.x, rubPlayer.y);
+      }
+    }
+  }
+}
+
+/* === OLD PROCEDURAL CAT DRAWING (preserved for reference) ===
+function drawCatBody_procedural() {
   if (catData.room !== currentRoom) return;
 
   const { x, y, state } = catData;
@@ -2009,6 +4033,7 @@ function drawCatBody() {
     drawGift(catData.gift, gx, gy);
   }
 }
+=== END OLD PROCEDURAL CAT DRAWING === */
 
 // Cat UI elements (drawn at full resolution)
 function drawCatUI() {
@@ -2032,6 +4057,15 @@ function drawCatUI() {
     ctx.textAlign = "center";
     ctx.fillStyle = `rgba(255,255,255,${miuAlpha * 0.9})`;
     ctx.fillText(currentLang === "zh" ? "喵~" : "Meow~", catMiuX, catMiuY);
+  }
+
+  // Stare: floating "..." thought bubble
+  if (state === "stare") {
+    const dotFloat = Math.sin(catAnimFrame * 1.5) * 1.5;
+    ctx.font = "bold 14px 'MiSans', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.fillText("...", x, y - 24 + dotFloat);
   }
 }
 
@@ -2125,7 +4159,7 @@ function updateAndDrawReactionEmojis() {
       sender = otherPlayers[r.senderId];
     }
 
-    const HEAD_OFFSET = 50; // above status emoji
+    const HEAD_OFFSET = 88; // above name label + status emoji
 
     if (r.phase === "rise") {
       // Phase 1: Rise from sender body to above head (1s = 60 frames)
@@ -2203,11 +4237,11 @@ const hearts = [];
 function spawnOneHeart(x, y) {
   hearts.push({
     x: x + (Math.random() - 0.5) * 6,
-    y: y - 14,
+    y: y - 16,
     vx: (Math.random() - 0.5) * 0.5,
     vy: -0.8 - Math.random() * 0.5,
     life: 50,
-    size: 7,
+    size: 8,
   });
 }
 
@@ -2261,10 +4295,11 @@ const scatterGifts = [];
 
 function drawGiftPile(player) {
   if (!player.giftPile || player.giftPile.length === 0) return;
+  const gvp = getPlayerVisualPos(player);
   for (let i = 0; i < player.giftPile.length; i++) {
     const pos = PILE_POSITIONS[i];
     if (!pos) break;
-    drawGift(player.giftPile[i], player.x + pos.dx, player.y + pos.dy);
+    drawGift(player.giftPile[i], gvp.x + pos.dx, gvp.y + pos.dy);
   }
 }
 
@@ -2314,169 +4349,41 @@ function updateAndDrawScatterGifts() {
 }
 
 // ============================================================
-// FIRE PARTICLES (for focus flame)
+// FOCUS AURA (glow around focusing players)
 // ============================================================
+// Stages: 0-30min hidden, 30 white, 60 green, 90 blue, 120 purple, 150+ gold
+// DEBUG: set AURA_STAGE_MS = 10000 in console for 10s stages
 
-const fireParticles = [];
+let AURA_STAGE_MS = 1800000; // 30min per stage
 
-// DEBUG: 10s per stage (0-10s small, 10-20s medium, 20-30s strong, 30-40s blue, 40s+ fatigue)
-// PRODUCTION: change 10000 → 1800000 (30min per stage), 40000 → 7200000 (120min full)
-const FLAME_STAGE_MS = 1800000;  // 30min per flame stage
-const FLAME_FULL_MS = 7200000;   // 120min to max
+const AURA_COLORS = [
+  null,                  // stage 0: hidden
+  [200, 220, 255],       // stage 1: cool white
+  [40, 200, 90],         // stage 2: green
+  [30, 110, 255],        // stage 3: blue
+  [155, 60, 255],        // stage 4: purple
+  [255, 180, 20],        // stage 5: gold
+];
 
-function getFlameIntensity(elapsedMs) {
-  return Math.min(elapsedMs / FLAME_FULL_MS, 1.0);
-}
-
-function spawnFireParticle(x, y, intensity) {
-  fireParticles.push({
-    x: x + (Math.random() - 0.5) * (2 + intensity * 2),
-    y: y,
-    vx: (Math.random() - 0.5) * 0.2,
-    vy: -0.3 - Math.random() * 0.5 * (0.5 + intensity),
-    life: 12 + Math.random() * 12,
-    maxLife: 24,
-    size: 1 + intensity * 1.5 + Math.random(),
-    intensity: intensity,
-  });
-}
-
-function getFlameColor(intensity, lifeRatio) {
-  if (intensity > 0.75) {
-    const blueAmount = (intensity - 0.75) * 4;
-    if (lifeRatio > 0.5) {
-      const r = Math.floor(170 + 60 * blueAmount);
-      const g = Math.floor(190 + 50 * blueAmount);
-      const b = Math.floor(210 + 40 * blueAmount);
-      return `rgb(${r},${g},${b})`;
-    }
-  }
-  if (lifeRatio > 0.6) return "#fff0d0";
-  if (lifeRatio > 0.3) return "#f0a040";
-  return "#e86030";
-}
-
-function updateAndDrawFire() {
-  for (let i = fireParticles.length - 1; i >= 0; i--) {
-    const p = fireParticles[i];
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vx += (Math.random() - 0.5) * 0.1;
-    p.life--;
-    if (p.life <= 0) {
-      fireParticles.splice(i, 1);
-      continue;
-    }
-    const lifeRatio = p.life / p.maxLife;
-    const alpha = Math.min(1, lifeRatio * 1.5) * (0.15 + p.intensity * 0.3);
-    const color = getFlameColor(p.intensity, lifeRatio);
-
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size * lifeRatio, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-function drawPlayerFire(player) {
+function drawFocusAura(player) {
   if (!player.isFocusing || !player.focusStartTime) return;
-
-  const elapsed = Date.now() - player.focusStartTime;
-  const intensity = getFlameIntensity(elapsed);
-
-  const fireX = player.x + 8;
-  const fireY = player.y - 54;
-
-  const flameHeight = 5 + intensity * 9;
-  const flameWidth = 2.5 + intensity * 4;
-
-  const time = Date.now() / 150;
-  const flicker = Math.sin(time * 1.8) * 0.08 + Math.sin(time * 2.9) * 0.04;
-
-  const fatigueMs = elapsed - FLAME_FULL_MS;
-  let fatigueFlicker = 0;
-  if (fatigueMs > 0) {
-    fatigueFlicker = Math.sin(time * 5) * 0.2 + Math.cos(time * 8) * 0.15;
-  }
-
-  const totalFlicker = flicker + fatigueFlicker;
-
-  // Glow
-  const glowRadius = 6 + intensity * 10;
-  const glowAlpha = 0.02 + intensity * 0.05;
+  const stage = Math.min(5, Math.floor((Date.now() - player.focusStartTime) / AURA_STAGE_MS));
+  if (stage < 1) return;
+  const color = AURA_COLORS[stage];
+  if (!color) return;
+  const [r, g, b] = color;
+  const radius = 28 + stage * 5;
+  const alpha = 0.30 + stage * 0.06;
   ctx.save();
-  ctx.globalAlpha = glowAlpha;
-  ctx.fillStyle = intensity > 0.75 ? "#aaccff" : "#ffaa33";
-  ctx.beginPath();
-  ctx.arc(fireX, fireY - flameHeight / 2, glowRadius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  // Base flame shape
-  ctx.save();
-  const grad = ctx.createLinearGradient(fireX, fireY, fireX, fireY - flameHeight);
-  if (intensity > 0.75) {
-    grad.addColorStop(0, "rgba(240,130,50,0.25)");
-    grad.addColorStop(0.4, "rgba(240,200,130,0.35)");
-    grad.addColorStop(1, `rgba(190,210,245,${Math.min(0.5, 0.4 + totalFlicker)})`);
-  } else {
-    grad.addColorStop(0, `rgba(240,110,50,${0.15 + intensity * 0.2})`);
-    grad.addColorStop(0.5, `rgba(245,180,70,${0.25 + intensity * 0.2})`);
-    grad.addColorStop(1, `rgba(255,240,210,${0.35 + intensity * 0.2})`);
-  }
-
+  const grad = ctx.createRadialGradient(player.x, player.y - 14, 0, player.x, player.y - 14, radius);
+  grad.addColorStop(0, `rgba(${r},${g},${b},${alpha})`);
+  grad.addColorStop(0.5, `rgba(${r},${g},${b},${alpha * 0.5})`);
+  grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
   ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.moveTo(fireX - flameWidth / 2, fireY);
-  ctx.quadraticCurveTo(
-    fireX - flameWidth / 2 + totalFlicker * 3, fireY - flameHeight * 0.5,
-    fireX + totalFlicker * 2, fireY - flameHeight
-  );
-  ctx.quadraticCurveTo(
-    fireX + flameWidth / 2 - totalFlicker * 3, fireY - flameHeight * 0.5,
-    fireX + flameWidth / 2, fireY
-  );
-  ctx.closePath();
+  ctx.arc(player.x, player.y - 14, radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
-
-  // Spawn fire particles
-  if (Math.random() < 0.1 + intensity * 0.15) {
-    spawnFireParticle(fireX, fireY - flameHeight * 0.3, intensity);
-  }
-
-  // Spark particles (stage 3+)
-  if (intensity > 0.5 && Math.random() < (intensity - 0.5) * 0.08) {
-    fireParticles.push({
-      x: fireX + (Math.random() - 0.5) * 6,
-      y: fireY - flameHeight * 0.5,
-      vx: (Math.random() - 0.5) * 0.8,
-      vy: -1.2 - Math.random() * 1.2,
-      life: 8 + Math.random() * 12,
-      maxLife: 20,
-      size: 0.8 + Math.random() * 0.8,
-      intensity: intensity,
-    });
-  }
-
-  // Fatigue sweat drop (past max stage) — show 8s, hide 52s, 60s cycle
-  if (fatigueMs > 0) {
-    const cycle = (Date.now() % 60000);  // 60s cycle
-    if (cycle < 8000) {
-      const sweatBob = Math.sin(Date.now() / 400) * 2;
-      const fadeIn = Math.min(1, cycle / 500);
-      const fadeOut = cycle > 7000 ? (8000 - cycle) / 1000 : 1;
-      ctx.save();
-      ctx.globalAlpha = fadeIn * fadeOut;
-      ctx.font = "14px 'MiSans', sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText("\u{1F4A7}", player.x + 12, player.y - 32 + sweatBob);
-      ctx.restore();
-    }
-  }
 }
 
 // ============================================================
@@ -2525,44 +4432,242 @@ function playPurr() {
 // ============================================================
 
 // ============================================================
-// EMOJI PICKER & REACTION NOTIFICATIONS
+// PLAYER CARD & OVERLAP SELECTOR
 // ============================================================
 
-let emojiPickerTarget = null;
+let playerCardTarget = null;
+let playerCardOpenPos = null; // { x, y } game coords when card was opened
+let playerCardRAF = null;
+let playerCardLastScreen = null; // { x, y } last computed screen pos to skip redundant repositions
 let reactionNotifications = [];
 let reactionNotifIdCounter = 0;
 
-function showEmojiPicker(targetId, screenX, screenY) {
-  emojiPickerTarget = targetId;
-  const picker = document.getElementById("emoji-picker");
-  // Show target player's name
-  const targetPlayer = otherPlayers[targetId];
-  const nameEl = document.getElementById("emoji-picker-name");
-  nameEl.textContent = targetPlayer ? (targetPlayer.name || "???") : "???";
-  picker.style.display = "flex";
-  // Position near the click, clamped within viewport
-  const pw = 210, ph = 76;
+const LANG_DISPLAY = { en: "EN", "zh-CN": "\u7B80\u4E2D", "zh-TW": "\u7E41\u4E2D" };
+
+function getTimePeriodForHour(h) {
+  if (h < 5)  return { emoji: "\uD83C\uDF11", key: "timeLateNight" };
+  if (h < 8)  return { emoji: "\uD83C\uDF05", key: "timeMorning" };
+  if (h < 11) return { emoji: "\u2600\uFE0F",  key: "timeForenoon" };
+  if (h < 13) return { emoji: "\uD83C\uDF24\uFE0F", key: "timeNoon" };
+  if (h < 17) return { emoji: "\uD83C\uDF07", key: "timeAfternoon" };
+  if (h < 19) return { emoji: "\uD83C\uDF06", key: "timeDusk" };
+  return { emoji: "\uD83C\uDF11", key: "timeNight" };
+}
+
+function showOverlapSelector(players, screenX, screenY) {
+  hidePlayerCard();
+  const sel = document.getElementById("player-overlap-selector");
+  const title = document.getElementById("overlap-title");
+  const list = document.getElementById("overlap-list");
+  title.textContent = t("selectPlayer");
+  list.innerHTML = "";
+  players.forEach(({ id }) => {
+    const p = otherPlayers[id];
+    if (!p) return;
+    const item = document.createElement("div");
+    item.className = "overlap-item";
+    const cvs = document.createElement("canvas");
+    drawCharHeadPreview(cvs, p.character || hashCharacter(id));
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = p.name || "???";
+    item.appendChild(cvs);
+    item.appendChild(nameSpan);
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      hideOverlapSelector();
+      showPlayerCard(id);
+    });
+    list.appendChild(item);
+  });
+  sel.style.display = "flex";
+  // Position near click
+  const rect = sel.getBoundingClientRect();
+  const w = 180, h = 30 + players.length * 34;
   let left = screenX + 10;
-  let top = screenY - ph / 2;
-  if (left + pw > window.innerWidth) left = screenX - pw - 10;
+  let top = screenY - h / 2;
+  if (left + w > window.innerWidth) left = screenX - w - 10;
   if (left < 4) left = 4;
   if (top < 4) top = 4;
-  if (top + ph > window.innerHeight - 4) top = window.innerHeight - ph - 4;
-  picker.style.left = left + "px";
-  picker.style.top = top + "px";
-  console.log("[REACT] Picker opened for:", targetPlayer?.name, "id:", targetId);
+  if (top + h > window.innerHeight - 4) top = window.innerHeight - h - 4;
+  sel.style.left = left + "px";
+  sel.style.top = top + "px";
 }
 
-function hideEmojiPicker() {
-  document.getElementById("emoji-picker").style.display = "none";
-  emojiPickerTarget = null;
+function hideOverlapSelector() {
+  document.getElementById("player-overlap-selector").style.display = "none";
 }
+
+function showPlayerCard(targetId) {
+  hideOverlapSelector();
+  playerCardTarget = targetId;
+  const p = otherPlayers[targetId];
+  if (!p) return;
+  playerCardOpenPos = { x: p.x, y: p.y };
+
+  // Fill card content
+  const card = document.getElementById("player-card");
+  const avatarCanvas = document.getElementById("player-card-avatar");
+  drawCharHeadPreview(avatarCanvas, p.character || hashCharacter(targetId));
+
+  document.getElementById("player-card-name").textContent = p.name || "???";
+
+  // Timezone — in header, no label, e.g. "🌅 Morning (5:00-8:00)"
+  const tzEl = document.getElementById("player-card-timezone");
+  if (p.timezoneHour != null) {
+    const tp = getTimePeriodForHour(p.timezoneHour);
+    tzEl.textContent = tp.emoji + " " + t(tp.key);
+  } else {
+    tzEl.textContent = "";
+  }
+
+  // Languages — pill badges reusing LANG_DISPLAY labels
+  const langContainer = document.getElementById("player-card-languages");
+  langContainer.innerHTML = "";
+  (p.languages || []).forEach(l => {
+    const pill = document.createElement("span");
+    pill.className = "player-card-lang-pill";
+    pill.textContent = LANG_DISPLAY[l] || l;
+    langContainer.appendChild(pill);
+  });
+
+  // Tagline — direct display, up to 2 lines
+  document.getElementById("player-card-tagline").textContent = p.tagline || "";
+
+  card.style.display = "block";
+  positionPlayerCard();
+  trackPlayerCardPosition();
+}
+
+function hidePlayerCard() {
+  document.getElementById("player-card").style.display = "none";
+  playerCardTarget = null;
+  playerCardOpenPos = null;
+  playerCardLastScreen = null;
+  if (playerCardRAF) {
+    cancelAnimationFrame(playerCardRAF);
+    playerCardRAF = null;
+  }
+}
+
+function positionPlayerCard() {
+  const p = otherPlayers[playerCardTarget];
+  if (!p) { hidePlayerCard(); return; }
+  const card = document.getElementById("player-card");
+  const inner = document.getElementById("player-card-inner");
+  const arrow = document.getElementById("player-card-arrow");
+  const screen = gameToScreen(p.x, p.y);
+  const cardW = inner.offsetWidth || 180;
+  const cardH = inner.offsetHeight || 100;
+  const arrowH = 8;
+  const abovePlayer = -48;
+
+  let left = screen.x - cardW / 2;
+  let top = screen.y + abovePlayer - cardH - arrowH;
+  let flipped = false;
+
+  // Flip below if not enough space above
+  if (top < 4) {
+    top = screen.y + 24;
+    flipped = true;
+  }
+
+  // Clamp horizontal
+  if (left < 4) left = 4;
+  if (left + cardW > window.innerWidth - 4) left = window.innerWidth - cardW - 4;
+
+  card.style.left = left + "px";
+  card.style.top = top + "px";
+  card.style.width = cardW + "px";
+  card.style.height = (cardH + arrowH) + "px";
+
+  // Arrow absolutely positioned, pointing at player center
+  const arrowLeft = Math.max(12, Math.min(cardW - 28, screen.x - left - 8));
+  arrow.style.left = arrowLeft + "px";
+  if (flipped) {
+    arrow.style.top = "0";
+    arrow.style.bottom = "";
+    arrow.style.borderTop = "none";
+    arrow.style.borderBottom = "8px solid rgba(22,33,62,0.94)";
+    inner.style.marginTop = arrowH + "px";
+    inner.style.marginBottom = "";
+  } else {
+    arrow.style.top = "";
+    arrow.style.bottom = "0";
+    arrow.style.borderBottom = "none";
+    arrow.style.borderTop = "8px solid rgba(22,33,62,0.94)";
+    inner.style.marginTop = "";
+    inner.style.marginBottom = "";
+  }
+}
+
+function trackPlayerCardPosition() {
+  if (!playerCardTarget) return;
+  const p = otherPlayers[playerCardTarget];
+  if (!p || p.room !== currentRoom) {
+    hidePlayerCard();
+    return;
+  }
+  // Dismiss if player moved too far from where card was opened
+  if (playerCardOpenPos) {
+    const dx = p.x - playerCardOpenPos.x;
+    const dy = p.y - playerCardOpenPos.y;
+    if (dx * dx + dy * dy > 80 * 80) {
+      hidePlayerCard();
+      return;
+    }
+  }
+  // Only reposition if screen coords changed (camera moved or player moved)
+  const screen = gameToScreen(p.x, p.y);
+  if (!playerCardLastScreen || screen.x !== playerCardLastScreen.x || screen.y !== playerCardLastScreen.y) {
+    playerCardLastScreen = screen;
+    positionPlayerCard();
+  }
+  playerCardRAF = requestAnimationFrame(trackPlayerCardPosition);
+}
+
+const REACTION_PAIR_COOLDOWN = 30000;
+const reactionPairTimes = {};
 
 function sendReaction(emoji) {
-  if (!emojiPickerTarget) return;
-  console.log("[REACT] Sending reaction:", emoji, "to:", emojiPickerTarget);
-  socket.emit("sendReaction", { targetId: emojiPickerTarget, emoji });
-  hideEmojiPicker();
+  if (!playerCardTarget) return;
+  const now = Date.now();
+  const key = playerCardTarget;
+  if (reactionPairTimes[key] && now - reactionPairTimes[key] < REACTION_PAIR_COOLDOWN) {
+    showReactionRateLimitHint();
+    hidePlayerCard();
+    return;
+  }
+  reactionPairTimes[key] = now;
+  socket.emit("sendReaction", { targetId: playerCardTarget, emoji });
+  hidePlayerCard();
+}
+
+function showReactionRateLimitHint() {
+  const data = {
+    senderId: myId,
+    senderName: t("system"),
+    targetId: myId,
+    targetName: "",
+    emoji: "",
+    room: currentRoom,
+    timestamp: Date.now(),
+  };
+  if (currentRoom === "rest") {
+    const chatMsgs = document.getElementById("chat-messages");
+    const div = document.createElement("div");
+    div.className = "chat-msg";
+    const d = new Date();
+    const ts = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    div.innerHTML = `<span class="chat-time">${ts}</span> <span class="chat-text" style="color:#777">${t("reactionRateLimit")}</span>`;
+    chatMsgs.appendChild(div);
+    chatMsgs.scrollTop = chatMsgs.scrollHeight;
+  } else {
+    const id = ++reactionNotifIdCounter;
+    const text = `<span style="color:#777">${t("reactionRateLimit")}</span>`;
+    reactionNotifications.push({ id, text, timestamp: Date.now() });
+    if (reactionNotifications.length > 10) reactionNotifications.shift();
+    updateNotificationPanel();
+  }
 }
 
 function coloredName(name, id) {
@@ -2638,50 +4743,100 @@ function updateNotificationPanel() {
   });
 }
 
-// Bind emoji button clicks
-document.querySelectorAll(".emoji-btn").forEach(btn => {
+// Player card close button (mobile)
+document.getElementById("player-card-close").addEventListener("click", (e) => {
+  e.stopPropagation();
+  hidePlayerCard();
+});
+
+// Bind emoji button clicks (player card reactions)
+document.querySelectorAll("#player-card-reactions .emoji-btn").forEach(btn => {
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
     sendReaction(btn.dataset.emoji);
   });
 });
 
+// Dismiss player card / overlap selector on outside click
+document.addEventListener("click", (e) => {
+  const card = document.getElementById("player-card");
+  const sel = document.getElementById("player-overlap-selector");
+  if (card.style.display !== "none" && card.style.display !== "" && !card.contains(e.target)) {
+    hidePlayerCard();
+  }
+  if (sel.style.display !== "none" && sel.style.display !== "" && !sel.contains(e.target)) {
+    hideOverlapSelector();
+  }
+});
+
+// --- Hover detection for player interaction hint ---
+let hoveredPlayerId = null;
+let mouseGameX = 0, mouseGameY = 0;
+let interactHintShown = localStorage.getItem("interactHintShown") === "1";
+let interactHintTimer = 0; // countdown frames for first-time hint
+
+canvas.addEventListener("mousemove", (e) => {
+  const { x, y } = screenToGame(e.clientX, e.clientY);
+  mouseGameX = x;
+  mouseGameY = y;
+  let found = null;
+  for (const id in otherPlayers) {
+    const p = otherPlayers[id];
+    if (p.room !== currentRoom) continue;
+    const dx = x - p.x;
+    const dy = y - p.y;
+    if (Math.abs(dx) < 25 && dy > -40 && dy < 15) {
+      found = id;
+      break;
+    }
+  }
+  if (found !== hoveredPlayerId) {
+    hoveredPlayerId = found;
+    canvas.style.cursor = found ? "url('/icons/pointer.png') 8 0, pointer" : "";
+  }
+});
+canvas.addEventListener("mouseleave", () => {
+  hoveredPlayerId = null;
+  canvas.style.cursor = "";
+});
+
 canvas.addEventListener("click", (e) => {
   const { x: clickX, y: clickY } = screenToGame(e.clientX, e.clientY);
 
-  // If picker is open, close it (unless we clicked another player)
-  const pickerOpen = document.getElementById("emoji-picker").style.display === "flex";
+  // If card or selector is open, close it (unless we clicked another player)
+  const cardOpen = document.getElementById("player-card").style.display === "block";
+  const selectorOpen = document.getElementById("player-overlap-selector").style.display === "flex";
 
-  // Check for player click first (box covers name label + body + shadow)
-  let clickedPlayerId = null;
-  let clickedDist = Infinity;
-  const playersInRoom = [];
+  // Check for player click — collect ALL matched players in hit area
+  const matchedPlayers = [];
   for (const id in otherPlayers) {
     const p = otherPlayers[id];
     if (p.room !== currentRoom) continue;
     const dx = clickX - p.x;
     const dy = clickY - p.y;
-    playersInRoom.push({ name: p.name, dx: Math.round(dx), dy: Math.round(dy) });
     // Rectangular hit area: ±25 horizontal, -40 to +15 vertical (covers name label above head down to feet)
     if (Math.abs(dx) < 25 && dy > -40 && dy < 15) {
       const dist = Math.abs(dx) + Math.abs(dy);
-      if (dist < clickedDist) {
-        clickedDist = dist;
-        clickedPlayerId = id;
-      }
+      matchedPlayers.push({ id, dist });
     }
   }
-  console.log("[REACT] Canvas click at game:", Math.round(clickX), Math.round(clickY),
-    "players:", playersInRoom.length, playersInRoom);
+  // Sort by distance so closest is first
+  matchedPlayers.sort((a, b) => a.dist - b.dist);
 
-  if (clickedPlayerId) {
-    showEmojiPicker(clickedPlayerId, e.clientX, e.clientY);
+  if (matchedPlayers.length === 1) {
+    e.stopPropagation();
+    showPlayerCard(matchedPlayers[0].id);
+    return;
+  } else if (matchedPlayers.length > 1) {
+    e.stopPropagation();
+    showOverlapSelector(matchedPlayers, e.clientX, e.clientY);
     return;
   }
 
-  // Close picker if open and clicked elsewhere
-  if (pickerOpen) {
-    hideEmojiPicker();
+  // Close card/selector if open and clicked elsewhere
+  if (cardOpen || selectorOpen) {
+    hidePlayerCard();
+    hideOverlapSelector();
     return;
   }
 
@@ -2705,16 +4860,20 @@ canvas.addEventListener("click", (e) => {
     }
   }
 
-  // Cat click (original behavior)
+  // Cat click — hit area covers the full sprite (32x32 anchored at bottom-center)
   if (catData.room !== currentRoom) return;
-  const dx = clickX - catData.x;
-  const dy = clickY - catData.y;
-  if (Math.sqrt(dx * dx + dy * dy) < 25) {
+  const cdx = clickX - catData.x;
+  const cdy = clickY - catData.y;
+  if (Math.abs(cdx) < 18 && cdy > -28 && cdy < 10) {
     socket.emit("petCat");
   }
 });
 
 socket.on("catPetted", (data) => {
+  if (data.ignoresPet) {
+    // Zoomies/gift cat: too busy, ignores you completely
+    return;
+  }
   if (data.wasSleeping) {
     // Sleeping cat: just tail wag, no heart
     catSleepPetTimer = 40;
@@ -2751,10 +4910,10 @@ let focusStartTime = null;
 let focusCategory = null;
 let focusTaskName = "";
 let lastKeyPressTime = Date.now();
+let hasCheckedIn = false;
 let autoWalking = false;
 let autoWalkPath = [];    // waypoint queue [{x,y}, ...]
 let awStuckFrames = 0;
-let entranceWalking = false;
 const IDLE_MS = 30000;          // post-focus auto-walk delay
 const DAYDREAM_MS = 5 * 60 * 1000;    // 5min
 const IDLE_LEAVE_MS = 10 * 60 * 1000; // 10min
@@ -2777,48 +4936,35 @@ function findPortalInCurrentRoom() {
 }
 
 function startAutoWalk() {
+  if (localSitting) standUp();
   autoWalking = true;
   awStuckFrames = 0;
-  const safeCols = [2,3,8,9,10,11,12,13,18,19,20,21,22,23,28,29];
-  const playerCol = Math.floor(localPlayer.x / TILE);
-  let bestCol = 10;
-  let bestDist = 999;
-  for (const sc of safeCols) {
-    const d = Math.abs(sc - playerCol);
-    if (d < bestDist) { bestDist = d; bestCol = sc; }
-  }
-  const safeX = bestCol * TILE + TILE / 2;
   const portal = findPortalInCurrentRoom();
-  // Walk to a safe row first, then align with portal, then walk to portal
-  const aboveDesksY = 2 * TILE + TILE / 2;
-  autoWalkPath = [
-    { x: safeX, y: localPlayer.y },
-    { x: safeX, y: aboveDesksY },
-    { x: portal.x, y: aboveDesksY },
-    { x: portal.x, y: portal.y },
-  ];
+  const path = findClientPath(localPlayer.x, localPlayer.y, portal.x, portal.y);
+  autoWalkPath = path || [{ x: portal.x, y: portal.y }];
 }
 
-function startEntranceWalk() {
-  if (!localPlayer || currentRoom !== "focus") return;
-  entranceWalking = true;
-  autoWalking = true;
-  awStuckFrames = 0;
-  // Walk from entrance (bottom) upward into the main Focus Zone area
-  const dims = ROOM_DIMS.focus;
-  const targetRow = Math.min(dims.rows - 5, 14);
-  const targetX = Math.floor(dims.cols / 2) * TILE;
-  const targetY = targetRow * TILE + TILE / 2;
-  autoWalkPath = [
-    { x: targetX, y: localPlayer.y },
-    { x: targetX, y: targetY },
-  ];
-  document.getElementById("autowalk-hint").textContent = t("checkingIn");
-  document.getElementById("autowalk-hint").style.display = "block";
+// Movement hint (PC first visit)
+let moveHintTimer = null;
+function showMoveHint() {
+  const el = document.getElementById("move-hint");
+  if (!el) return;
+  el.style.display = "block";
+  // Fade in after a short delay
+  setTimeout(() => { el.style.opacity = "1"; }, 500);
 }
+function hideMoveHint() {
+  const el = document.getElementById("move-hint");
+  if (!el || el.style.display === "none") return;
+  el.style.opacity = "0";
+  setTimeout(() => { el.style.display = "none"; }, 500);
+  if (moveHintTimer) { clearTimeout(moveHintTimer); moveHintTimer = null; }
+}
+
 let focusPortalPending = false;
 let postFocusTime = 0; // timestamp when focus ended, 0 = not in post-focus state
 let emojiSuppressUntil = 0; // hide status emoji until this timestamp
+let localSitting = false; // local player sitting state
 
 // ============================================================
 // INPUT
@@ -2826,20 +4972,54 @@ let emojiSuppressUntil = 0; // hide status emoji until this timestamp
 
 document.addEventListener("keydown", (e) => {
   // Don't capture keys when typing in inputs
-  if (e.target.id === "chat-input" || e.target.id === "name-input" || e.target.id === "focus-task-input" || e.target.id === "welcome-name") return;
+  if (e.target.id === "chat-input" || e.target.id === "name-input" || e.target.id === "tagline-input" || e.target.id === "focus-task-input" || e.target.id === "welcome-name" || e.target.id === "welcome-tagline" || e.target.id === "auth-username" || e.target.id === "auth-password") return;
 
   // Reset idle timer and cancel auto-walk / post-focus / daydreaming state
   lastKeyPressTime = Date.now();
+  // Hide move hint only on actual movement keys
+  const hintKeys = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","w","W","a","A","s","S","d","D"];
+  if (hintKeys.includes(e.key)) hideMoveHint();
   if (autoWalking) {
     autoWalking = false;
     autoWalkPath = [];
-    entranceWalking = false;
     postFocusTime = 0;
     document.getElementById("autowalk-hint").style.display = "none";
   }
   if (localPlayer && localPlayer.status === "daydreaming") {
     localPlayer.status = "wandering";
     socket.emit("setStatus", "wandering");
+  }
+
+  // Stand up on movement key if sitting
+  if (localSitting && localPlayer) {
+    const moveKeys = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","w","W","a","A","s","S","d","D"];
+    if (moveKeys.includes(e.key)) {
+      standUp();
+    }
+  }
+
+  // E to toggle sit/stand (like most PC games)
+  if ((e.key === "e" || e.key === "E") && localPlayer) {
+    const camp = getNearestCampfire();
+    if (camp && camp.dist <= CAMPFIRE_INTERACT_DIST) {
+      socket.emit("toggleCampfire", { id: camp.id, x: localPlayer.x, y: localPlayer.y });
+      return;
+    }
+    if (localSitting) {
+      standUp();
+    } else {
+      const seat = getNearestSittable(localPlayer.x, localPlayer.y);
+      if (seat) {
+        localPlayer.x = seat.x;
+        localPlayer.y = seat.y;
+        if (seat.seatType !== 15) localPlayer.direction = seat.direction;
+        localPlayer.seatType = seat.seatType;
+        localSitting = true;
+        localPlayer.isSitting = true;
+        emitPlayerSit(true);
+        socket.emit("playerMove", { x: localPlayer.x, y: localPlayer.y, direction: localPlayer.direction });
+      }
+    }
   }
 
   switch (e.key) {
@@ -2860,8 +5040,8 @@ document.addEventListener("keyup", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key) &&
-      e.target.id !== "chat-input" && e.target.id !== "name-input" && e.target.id !== "focus-task-input" && e.target.id !== "welcome-name") {
+  if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key) &&
+      e.target.id !== "chat-input" && e.target.id !== "name-input" && e.target.id !== "tagline-input" && e.target.id !== "focus-task-input" && e.target.id !== "welcome-name" && e.target.id !== "welcome-tagline" && e.target.id !== "auth-username" && e.target.id !== "auth-password") {
     e.preventDefault();
   }
 });
@@ -2871,8 +5051,10 @@ document.addEventListener("keydown", (e) => {
 // ============================================================
 
 const nameInput = document.getElementById("name-input");
+const taglineInput = document.getElementById("tagline-input");
 const statusSelect = document.getElementById("status-select");
 const onlineTotal = document.getElementById("online-total");
+const onlineCount = document.getElementById("online-count");
 const onlineFocus = document.getElementById("online-focus");
 const onlineLounge = document.getElementById("online-lounge");
 const roomLabel = document.getElementById("room-label");
@@ -2883,6 +5065,1002 @@ const chatInput = document.getElementById("chat-input");
 const chatSend = document.getElementById("chat-send");
 const musicToggle = document.getElementById("music-toggle");
 const volumeSlider = document.getElementById("volume-slider");
+const settingsLangTags = document.getElementById("settings-lang-tags");
+const settingsTimeDisplay = document.getElementById("settings-time-display");
+const settingsPanel = document.getElementById("settings-panel");
+const profileTrigger = document.getElementById("profile-trigger");
+const settingsIcon = document.getElementById("settings-icon");
+const settingsDetail = document.getElementById("settings-detail");
+const miniPiPToggle = document.getElementById("mini-pip-toggle");
+const supportsDocumentPiP = !!(window.documentPictureInPicture && window.documentPictureInPicture.requestWindow);
+let miniPiPWindow = null;
+let miniOnlineCounts = { total: 0, focus: 0, lounge: 0 };
+const MINI_MAP_AVATAR_SIZE = 24;
+const MINI_MAP_FPS = 30;
+const MINI_MAP_BASE_CACHE = new Map();
+let miniMapAnimRunning = false;
+let miniMapLastFrame = 0;
+const MINI_PANEL_PADDING = 16;
+const MINI_MAP_MIN_W = 320;
+const MINI_MAP_MIN_H = 192;
+const MINI_MAP_MAX_W = MINI_MAP_MIN_W * 2;
+const MINI_MAP_W = MINI_MAP_MIN_W;
+const MINI_MAP_H = MINI_MAP_MIN_H;
+const MINI_MAP_WALKABLE = new Set([0, 5, 6, 7, 8, 9, 12, 13, 14, 15]);
+const MINI_MAP_INTERACT = new Set([7, 8, 9, 12, 13, 14, 15]);
+const MINI_PANEL_MIN_W = MINI_MAP_MIN_W + MINI_PANEL_PADDING * 2;
+const MINI_PANEL_MAX_W = MINI_MAP_MAX_W + MINI_PANEL_PADDING * 2;
+const MINI_PANEL_DEFAULT_W = MINI_PANEL_MIN_W;
+const MINI_PANEL_DEFAULT_H = 380;
+const MINI_PANEL_MAX_H = 720;
+let miniFocusTaskDraft = "";
+let miniPiPOptionLang = "";
+const MINI_SHOW_PREF_KEY = "miniShowSections";
+const MINI_SHOW_DEFAULT = { state: true, timer: true, map: true };
+let miniShowSections = loadMiniShowSections();
+
+function loadMiniShowSections() {
+  try {
+    const raw = localStorage.getItem(MINI_SHOW_PREF_KEY);
+    if (!raw) return { ...MINI_SHOW_DEFAULT };
+    const parsed = JSON.parse(raw);
+    const state = !!parsed.state;
+    const timer = !!parsed.timer;
+    const map = !!parsed.map;
+    if (!state && !timer && !map) return { ...MINI_SHOW_DEFAULT };
+    return { state, timer, map };
+  } catch (_) {
+    return { ...MINI_SHOW_DEFAULT };
+  }
+}
+
+function saveMiniShowSections() {
+  try {
+    localStorage.setItem(MINI_SHOW_PREF_KEY, JSON.stringify(miniShowSections));
+  } catch (_) {}
+}
+
+function setOnlineDetailSegment(el, emoji, label, count) {
+  if (!el) return;
+  const ownerDoc = el.ownerDocument || document;
+  let emojiEl = el.querySelector(".online-detail-emoji");
+  let textEl = el.querySelector(".online-detail-text");
+  let countEl = el.querySelector(".online-detail-count");
+  if (!emojiEl || !textEl || !countEl) {
+    el.textContent = "";
+    emojiEl = ownerDoc.createElement("span");
+    emojiEl.className = "online-detail-emoji";
+    emojiEl.setAttribute("aria-hidden", "true");
+    textEl = ownerDoc.createElement("span");
+    textEl.className = "online-detail-text";
+    countEl = ownerDoc.createElement("span");
+    countEl.className = "online-detail-count";
+    el.appendChild(emojiEl);
+    el.appendChild(textEl);
+    el.appendChild(countEl);
+  }
+  emojiEl.textContent = emoji;
+  textEl.textContent = `${label}:`;
+  countEl.textContent = String(count);
+}
+
+function isMiniPiPOpen() {
+  return !!miniPiPWindow && !miniPiPWindow.closed;
+}
+
+function handleMiniFocusToggle() {
+  if (currentRoom !== "focus") return;
+  const miniDoc = isMiniPiPOpen() ? miniPiPWindow.document : null;
+  const categoryEl = miniDoc ? miniDoc.getElementById("mini-focus-category") : null;
+  const taskEl = miniDoc ? miniDoc.getElementById("mini-focus-task") : null;
+  const category = (categoryEl && categoryEl.value) || selectedCategory || "working";
+  const task = (taskEl ? taskEl.value : miniFocusTaskDraft).trim();
+  if (isFocusing) {
+    endFocus();
+  } else {
+    selectedCategory = category;
+    miniFocusTaskDraft = task;
+    startFocus(category, task);
+  }
+  if (taskEl) taskEl.dataset.dirty = "0";
+  renderMiniPiPStatus();
+}
+
+function clampMiniPiPPanelSize() {
+  if (!isMiniPiPOpen()) return;
+  const w = miniPiPWindow.innerWidth || MINI_PANEL_DEFAULT_W;
+  const h = miniPiPWindow.innerHeight || MINI_PANEL_DEFAULT_H;
+  const cw = Math.max(MINI_PANEL_MIN_W, Math.min(MINI_PANEL_MAX_W, w));
+  const ch = Math.max(100, Math.min(MINI_PANEL_MAX_H, h));
+  if ((cw !== w || ch !== h) && typeof miniPiPWindow.resizeTo === "function") {
+    try { miniPiPWindow.resizeTo(cw, ch); } catch (_) {}
+  }
+}
+
+function miniEllipsize(ctx2d, text, maxWidth) {
+  if (ctx2d.measureText(text).width <= maxWidth) return text;
+  let out = text;
+  while (out.length > 1 && ctx2d.measureText(out + "...").width > maxWidth) {
+    out = out.slice(0, -1);
+  }
+  return out + "...";
+}
+
+function miniStatusEmoji(player) {
+  const key = player.isFocusing
+    ? (player.focusCategory || player.status || "focusing")
+    : (player.status || "wandering");
+  return STATUS_EMOJI[key] || "";
+}
+
+function miniPlayersSnapshot() {
+  const list = [];
+  if (localPlayer) {
+    list.push({
+      ...localPlayer,
+      id: myId || localPlayer.id || "self",
+    });
+  }
+  for (const id in otherPlayers) {
+    list.push(otherPlayers[id]);
+  }
+  return list;
+}
+
+function drawMiniAvatar(ctx2d, player, x, y, size) {
+  const radius = size / 2;
+  const left = Math.round(x - radius);
+  const top = Math.round(y - radius) - 1;
+  const pid = String(player.id || "unknown");
+  const config = player.character || hashCharacter(pid);
+  const sheet = getCharacterSheet(config);
+  const isSelf = pid === String(myId || "");
+
+  // Soft background to help the avatar stand out on the map.
+  const bgR = radius + 2;
+  ctx2d.save();
+  ctx2d.fillStyle = isSelf ? "rgba(255,255,255,0.25)" : "rgba(77,166,255,0.22)";
+  ctx2d.beginPath();
+  ctx2d.arc(x, y, bgR, 0, Math.PI * 2);
+  ctx2d.fill();
+  ctx2d.restore();
+
+  ctx2d.save();
+  ctx2d.beginPath();
+  ctx2d.arc(x, y, radius, 0, Math.PI * 2);
+  ctx2d.closePath();
+  ctx2d.clip();
+
+  if (sheet && sheet._loaded) {
+    ctx2d.imageSmoothingEnabled = false;
+    ctx2d.drawImage(sheet, 3 * 32, 20, 32, 32, left, top, size, size);
+  } else {
+    ctx2d.fillStyle = lightenColor(hashColor(pid), 0.2);
+    ctx2d.beginPath();
+    ctx2d.arc(x, y, radius, 0, Math.PI * 2);
+    ctx2d.fill();
+  }
+  ctx2d.restore();
+
+  ctx2d.strokeStyle = isSelf ? "#ffffff" : "#4DA6FF";
+  ctx2d.lineWidth = 2;
+  ctx2d.beginPath();
+  ctx2d.arc(x, y, radius + 0.5, 0, Math.PI * 2);
+  ctx2d.stroke();
+}
+
+function drawMiniRoomMap(room, canvas, players) {
+  if (!canvas) return;
+  const ctx2d = canvas.getContext("2d");
+  if (!ctx2d) return;
+
+  const dims = ROOM_DIMS[room] || ROOM_DIMS.focus;
+  const cols = Math.max(1, dims.cols || 32);
+  const rows = Math.max(1, dims.rows || 18);
+  const mapW = cols * TILE;
+  const mapH = rows * TILE;
+  const collision = (ROOM_DATA[room] && ROOM_DATA[room].collision) ? ROOM_DATA[room].collision : null;
+  const mapRatio = cols / rows;
+  const viewport = canvas.parentElement;
+  const viewportW = Math.max(1, Math.round((viewport && viewport.clientWidth) || canvas.clientWidth || MINI_MAP_W));
+  const minW = MINI_MAP_MIN_W;
+  const maxW = MINI_MAP_MAX_W;
+  let cssW = Math.max(minW, Math.min(maxW, viewportW));
+  let cssH = Math.max(1, Math.round(cssW / mapRatio));
+  if (canvas._cssW !== cssW || canvas._cssH !== cssH) {
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+    canvas._cssW = cssW;
+    canvas._cssH = cssH;
+  }
+  const dpr = Math.max(1, Math.round(((miniPiPWindow && miniPiPWindow.devicePixelRatio) || window.devicePixelRatio || 1) * 100) / 100);
+  const targetW = Math.max(1, Math.round(cssW * dpr));
+  const targetH = Math.max(1, Math.round(cssH * dpr));
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+  const tw = cssW / cols;
+  const th = cssH / rows;
+
+  const palette = room === "focus"
+    ? {
+        base: "#13233f",
+        walk: "#1c335a",
+        rug: "#20406f",
+        desk: "#4f6f95",
+        interact: "#6fcf97",
+        wall: "#0c162b",
+        obj: "#2a4672",
+        portal: "#4d9fff",
+      }
+    : {
+        base: "#2a1f44",
+        walk: "#3a2a5d",
+        rug: "#4a3773",
+        desk: "#9c6f44",
+        interact: "#7ed39f",
+        wall: "#171229",
+        obj: "#5b3d85",
+        portal: "#e39b55",
+      };
+
+  const cacheKey = `${room}:${targetW}x${targetH}`;
+  let baseCanvas = MINI_MAP_BASE_CACHE.get(cacheKey);
+  if (!baseCanvas) {
+    baseCanvas = document.createElement("canvas");
+    baseCanvas.width = targetW;
+    baseCanvas.height = targetH;
+    const bctx = baseCanvas.getContext("2d");
+    if (bctx) {
+      bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bctx.imageSmoothingEnabled = false;
+      bctx.clearRect(0, 0, cssW, cssH);
+      bctx.fillStyle = palette.base;
+      bctx.fillRect(0, 0, cssW, cssH);
+
+      if (collision && collision.length) {
+        for (let r = 0; r < rows; r++) {
+          const row = collision[r] || [];
+          for (let c = 0; c < cols; c++) {
+            const tile = row[c] == null ? 0 : row[c];
+            let color = palette.walk;
+            if (tile === 2) color = palette.desk;
+            else if (tile === 8) color = palette.portal;
+            else if (MINI_MAP_INTERACT.has(tile)) color = palette.interact;
+            else if (tile === 5) color = palette.rug;
+            else if (!MINI_MAP_WALKABLE.has(tile)) {
+              color = (tile === 1 || tile === 11) ? palette.wall : palette.obj;
+            }
+            bctx.fillStyle = color;
+            bctx.fillRect(
+              Math.floor(c * tw),
+              Math.floor(r * th),
+              Math.ceil(tw) + 0.5,
+              Math.ceil(th) + 0.5
+            );
+          }
+        }
+      }
+    }
+    MINI_MAP_BASE_CACHE.set(cacheKey, baseCanvas);
+  }
+
+  ctx2d.setTransform(1, 0, 0, 1, 0, 0);
+  ctx2d.imageSmoothingEnabled = false;
+  ctx2d.drawImage(baseCanvas, 0, 0);
+  ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const roomPlayers = players.filter((p) => (p.room || "focus") === room);
+  ctx2d.save();
+  ctx2d.beginPath();
+  ctx2d.rect(2, 2, Math.max(0, cssW - 4), Math.max(0, cssH - 4));
+  ctx2d.clip();
+  ctx2d.font = "14px 'MiSans', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+  ctx2d.textBaseline = "middle";
+  ctx2d.textAlign = "left";
+
+  for (const player of roomPlayers) {
+    const px = Math.max(8, Math.min(cssW - 8, (player.x / mapW) * cssW));
+    const py = Math.max(8, Math.min(cssH - 8, (player.y / mapH) * cssH));
+    drawMiniAvatar(ctx2d, player, px, py, MINI_MAP_AVATAR_SIZE);
+
+    const emoji = miniStatusEmoji(player);
+    if (emoji) {
+      const emojiY = py - (MINI_MAP_AVATAR_SIZE / 2) - 10;
+      ctx2d.fillStyle = "#ffffff";
+      ctx2d.textAlign = "center";
+      ctx2d.textBaseline = "middle";
+      ctx2d.fillText(emoji, px, emojiY);
+      ctx2d.textAlign = "left";
+    }
+  }
+  ctx2d.restore();
+}
+
+function buildMiniPiPWindow(win) {
+  const doc = win.document;
+  doc.head.innerHTML = `
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>${t("online")}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --mini-pad: ${MINI_PANEL_PADDING}px;
+        --mini-map-min: ${MINI_MAP_MIN_W}px;
+        --mini-map-max: ${MINI_MAP_MAX_W}px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(120% 120% at 90% 0%, rgba(126,200,227,0.15) 0%, rgba(25,26,37,0) 60%),
+          radial-gradient(90% 90% at 0% 100%, rgba(232,180,248,0.16) 0%, rgba(25,26,37,0) 62%),
+          #191a25;
+        color: #eee;
+        font-family: "MiSans", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 14px;
+      }
+      #mini-card {
+        padding: var(--mini-pad);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: center;
+      }
+      .mini-section {
+        width: 100%;
+        max-width: var(--mini-map-max);
+        min-width: var(--mini-map-min);
+      }
+      #mini-filter-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        font-size: 13px;
+        color: rgba(220,230,255,0.8);
+      }
+      #mini-filter-label {
+        font-weight: 600;
+        color: #dce6ff;
+      }
+      .mini-filter-option {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .mini-filter-option input[type="checkbox"] {
+        width: 14px;
+        height: 14px;
+        accent-color: #7ec8e3;
+      }
+      #mini-head {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        min-height: 24px;
+      }
+      #mini-online-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+        min-width: 0;
+      }
+      #mini-online-total {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: #eee;
+        font-weight: bold;
+      }
+      #mini-online-status-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #mini-online-status-emoji {
+        font-size: 15px;
+        line-height: 1;
+        width: 15px;
+        height: 15px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #mini-online-count {
+        font-size: 16px;
+        color: #53d769;
+        min-width: 12px;
+        text-align: left;
+        font-variant-numeric: tabular-nums;
+      }
+      .mini-online-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 14px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .mini-online-item .online-detail-emoji {
+        font-size: 15px;
+        line-height: 1;
+        width: 15px;
+        height: 15px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+      }
+      .mini-online-item .online-detail-text,
+      .mini-online-item .online-detail-count {
+        font-size: 14px;
+        line-height: 1;
+      }
+      #mini-online-focus { color: #7ec8e3; }
+      #mini-online-lounge { color: #e8b4f8; }
+      .mini-online-sep {
+        color: rgba(220,230,255,0.35);
+        font-size: 13px;
+        line-height: 1;
+      }
+      .mini-online-dot {
+        color: rgba(220,230,255,0.45);
+        font-size: 16px;
+        line-height: 1;
+      }
+      #mini-focus-block {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      #mini-focus-fields {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      #mini-focus-category {
+        appearance: none;
+        border: 1px solid rgba(15,52,96,0.5);
+        background: rgba(15, 27, 56, 0.45) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='rgba(220,230,255,0.5)'/%3E%3C/svg%3E") no-repeat right 10px center;
+        color: rgba(220,230,255,0.75);
+        border-radius: 4px;
+        padding: 8px 28px 8px 12px;
+        height: 32px;
+        font-family: inherit;
+        font-size: 14px;
+        line-height: 1;
+        min-width: 112px;
+      }
+      #mini-focus-task {
+        border: 1px solid rgba(15,52,96,0.5);
+        background: rgba(15, 27, 56, 0.45);
+        color: rgba(220,230,255,0.75);
+        border-radius: 4px;
+        padding: 8px 12px;
+        height: 32px;
+        font-family: inherit;
+        font-size: 14px;
+        line-height: 1;
+        min-width: 130px;
+        flex: 1;
+      }
+      #mini-focus-task:focus,
+      #mini-focus-category:focus {
+        outline: none;
+        border-color: rgba(126,200,227,0.5);
+      }
+      #mini-focus-action {
+        appearance: none;
+        border: 1px solid rgba(245,166,35,0.4);
+        background: rgba(245,166,35,0.08);
+        color: rgba(245,166,35,0.8);
+        border-radius: 4px;
+        padding: 8px 12px;
+        height: 32px;
+        width: 100%;
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1;
+        cursor: pointer;
+        flex: 0 0 auto;
+        font-variant-numeric: tabular-nums;
+      }
+      #mini-focus-action.active {
+        background: rgba(245,166,35,0.15);
+      }
+      #mini-focus-action:disabled {
+        border-color: rgba(68,91,130,0.3);
+        color: rgba(143,152,184,0.6);
+        background: rgba(68,91,130,0.1);
+        cursor: not-allowed;
+      }
+      #mini-map-wrap {
+        height: 200px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: flex-start;
+        overflow: hidden;
+      }
+      .mini-map-viewport {
+        width: 100%;
+        min-height: 0;
+        display: flex;
+        align-items: flex-start;
+        justify-content: flex-start;
+        overflow: hidden;
+      }
+      .mini-map-canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+        border-radius: 6px;
+        background: #10182c;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        pointer-events: none;
+      }
+    </style>
+  `;
+  const stateChecked = miniShowSections.state ? "checked" : "";
+  const timerChecked = miniShowSections.timer ? "checked" : "";
+  const mapChecked = miniShowSections.map ? "checked" : "";
+  doc.body.innerHTML = `
+    <div id="mini-card">
+      <div id="mini-filter-row" class="mini-section">
+        <span id="mini-filter-label"></span>
+        <label class="mini-filter-option">
+          <input type="checkbox" id="mini-show-state" ${stateChecked} />
+          <span id="mini-label-state"></span>
+        </label>
+        <label class="mini-filter-option">
+          <input type="checkbox" id="mini-show-timer" ${timerChecked} />
+          <span id="mini-label-timer"></span>
+        </label>
+        <label class="mini-filter-option">
+          <input type="checkbox" id="mini-show-map" ${mapChecked} />
+          <span id="mini-label-map"></span>
+        </label>
+      </div>
+      <div id="mini-head" class="mini-section">
+        <div id="mini-online-row">
+          <span id="mini-online-total">
+            <span id="mini-online-status-icon" aria-hidden="true">
+              <span id="mini-online-status-emoji">🟢</span>
+            </span>
+            <span id="mini-online-count">0</span>
+          </span>
+          <span class="mini-online-sep">｜</span>
+          <span id="mini-online-focus" class="mini-online-item"></span>
+          <span class="mini-online-dot">·</span>
+          <span id="mini-online-lounge" class="mini-online-item"></span>
+        </div>
+      </div>
+      <div id="mini-focus-block" class="mini-section">
+        <div id="mini-focus-fields">
+          <select id="mini-focus-category">
+            <option value="working"></option>
+            <option value="studying"></option>
+            <option value="reading"></option>
+            <option value="writing"></option>
+            <option value="creating"></option>
+            <option value="exercising"></option>
+          </select>
+          <input id="mini-focus-task" type="text" maxlength="50" />
+        </div>
+        <button id="mini-focus-action" type="button"></button>
+      </div>
+      <div id="mini-map-wrap" class="mini-section">
+        <div class="mini-map-viewport">
+          <canvas class="mini-map-canvas" id="mini-map-current" width="${MINI_MAP_W}" height="${MINI_MAP_H}"></canvas>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const focusBtn = doc.getElementById("mini-focus-action");
+  if (focusBtn) {
+    focusBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      handleMiniFocusToggle();
+    });
+  }
+
+  const categoryEl = doc.getElementById("mini-focus-category");
+  if (categoryEl) {
+    categoryEl.addEventListener("change", () => {
+      selectedCategory = categoryEl.value || "working";
+      renderMiniPiPStatus();
+    });
+  }
+
+  const taskEl = doc.getElementById("mini-focus-task");
+  if (taskEl) {
+    taskEl.addEventListener("input", () => {
+      miniFocusTaskDraft = taskEl.value;
+      taskEl.dataset.dirty = "1";
+    });
+    taskEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleMiniFocusToggle();
+      }
+    });
+  }
+
+  const bindFilter = (key, id) => {
+    const input = doc.getElementById(id);
+    if (!input) return;
+    input.addEventListener("change", () => {
+      const next = { ...miniShowSections, [key]: input.checked };
+      if (!next.state && !next.timer && !next.map) {
+        input.checked = true;
+        return;
+      }
+      miniShowSections = next;
+      saveMiniShowSections();
+      applyMiniSectionVisibility(doc);
+      renderMiniPiPStatus();
+      autoResizeMiniPiP();
+    });
+  };
+  bindFilter("state", "mini-show-state");
+  bindFilter("timer", "mini-show-timer");
+  bindFilter("map", "mini-show-map");
+
+  // Auto-hide filter row when mouse leaves, show on hover
+  _miniFilterVisible = true;
+  doc.body.addEventListener("mouseenter", resetMiniFilterTimer);
+  doc.body.addEventListener("mousemove", resetMiniFilterTimer);
+  doc.body.addEventListener("mouseleave", () => {
+    clearTimeout(_miniFilterTimer);
+    _miniFilterTimer = setTimeout(() => setMiniFilterVisible(false), 10000);
+  });
+  // Start initial hide timer
+  _miniFilterTimer = setTimeout(() => setMiniFilterVisible(false), 10000);
+}
+
+function updateMiniPiPButton() {
+  if (!miniPiPToggle) return;
+  if (!supportsDocumentPiP) {
+    miniPiPToggle.disabled = true;
+    miniPiPToggle.textContent = t("miniUnsupported");
+    miniPiPToggle.title = t("miniUnsupported");
+    return;
+  }
+  miniPiPToggle.disabled = false;
+  const text = isMiniPiPOpen() ? t("miniClose") : t("miniOpen");
+  miniPiPToggle.textContent = text;
+  miniPiPToggle.title = text;
+}
+
+function renderMiniPiPStatus() {
+  if (!isMiniPiPOpen()) return;
+  const doc = miniPiPWindow.document;
+  const setText = (id, value) => {
+    const el = doc.getElementById(id);
+    if (el) el.textContent = value;
+  };
+
+  setText("mini-filter-label", t("miniShowLabel"));
+  setText("mini-label-state", t("miniShowState"));
+  setText("mini-label-timer", t("miniShowTimer"));
+  setText("mini-label-map", t("miniShowMap"));
+  const stateInput = doc.getElementById("mini-show-state");
+  const timerInput = doc.getElementById("mini-show-timer");
+  const mapInput = doc.getElementById("mini-show-map");
+  if (stateInput) stateInput.checked = !!miniShowSections.state;
+  if (timerInput) timerInput.checked = !!miniShowSections.timer;
+  if (mapInput) mapInput.checked = !!miniShowSections.map;
+  applyMiniSectionVisibility(doc);
+
+  doc.title = `🟢 ${miniOnlineCounts.total} ${t("online")}`;
+  setText("mini-online-count", String(miniOnlineCounts.total));
+  setOnlineDetailSegment(doc.getElementById("mini-online-focus"), "📖", t("focusZone"), miniOnlineCounts.focus);
+  setOnlineDetailSegment(doc.getElementById("mini-online-lounge"), "☕", t("lounge"), miniOnlineCounts.lounge);
+
+  const focusAction = isFocusing ? t("endFocus") : t("startFocus");
+  const timerText = (isFocusing && focusStartTime) ? formatFocusTime(Date.now() - focusStartTime) : "--:--";
+
+  const categoryEl = doc.getElementById("mini-focus-category");
+  const categoryDefs = [
+    ["working", "catWorking"],
+    ["studying", "catStudying"],
+    ["reading", "catReading"],
+    ["writing", "catWriting"],
+    ["creating", "catCreating"],
+    ["exercising", "catExercising"],
+  ];
+  if (categoryEl) {
+    if (miniPiPOptionLang !== currentLang) {
+      for (let i = 0; i < categoryDefs.length; i++) {
+        const opt = categoryEl.options[i];
+        if (opt) opt.textContent = t(categoryDefs[i][1]);
+      }
+      miniPiPOptionLang = currentLang;
+    }
+    if (doc.activeElement !== categoryEl) {
+      const catVal = isFocusing ? (focusCategory || selectedCategory || "working") : (selectedCategory || "studying");
+      if (categoryEl.value !== catVal) categoryEl.value = catVal;
+    }
+    categoryEl.disabled = false;
+  }
+
+  const taskEl = doc.getElementById("mini-focus-task");
+  if (taskEl) {
+    taskEl.placeholder = t("taskPlaceholder");
+    if (isFocusing && doc.activeElement !== taskEl && taskEl.dataset.dirty !== "1") {
+      taskEl.value = focusTaskName || "";
+      taskEl.dataset.dirty = "0";
+    } else if (!isFocusing && doc.activeElement !== taskEl && taskEl.dataset.dirty !== "1") {
+      taskEl.value = miniFocusTaskDraft;
+    }
+    taskEl.disabled = false;
+  }
+
+  const focusBtn = doc.getElementById("mini-focus-action");
+  if (focusBtn) {
+    focusBtn.textContent = isFocusing ? timerText : focusAction;
+    focusBtn.disabled = currentRoom !== "focus";
+    focusBtn.classList.toggle("active", isFocusing);
+  }
+
+  const roomKey = currentRoom === "rest" ? "rest" : "focus";
+  const roomDims = ROOM_DIMS[roomKey] || ROOM_DIMS.focus;
+  const mapCanvas = doc.getElementById("mini-map-current");
+  if (mapCanvas && roomDims && roomDims.cols && roomDims.rows) {
+    mapCanvas.style.aspectRatio = `${roomDims.cols} / ${roomDims.rows}`;
+  }
+}
+
+function startMiniMapLoop() {
+  if (miniMapAnimRunning) return;
+  miniMapAnimRunning = true;
+  miniMapLastFrame = 0;
+  requestAnimationFrame(miniMapLoop);
+}
+
+function miniMapLoop(now) {
+  if (!isMiniPiPOpen()) {
+    miniMapAnimRunning = false;
+    return;
+  }
+  if (!miniShowSections.map) {
+    requestAnimationFrame(miniMapLoop);
+    return;
+  }
+  const minDelta = 1000 / MINI_MAP_FPS;
+  if (!miniMapLastFrame || now - miniMapLastFrame >= minDelta) {
+    miniMapLastFrame = now;
+    const doc = miniPiPWindow.document;
+    const roomKey = currentRoom === "rest" ? "rest" : "focus";
+    const mapCanvas = doc.getElementById("mini-map-current");
+    const players = miniPlayersSnapshot();
+    drawMiniRoomMap(roomKey, mapCanvas, players);
+  }
+  requestAnimationFrame(miniMapLoop);
+}
+
+function closeMiniPiPWindow() {
+  if (!isMiniPiPOpen()) {
+    miniPiPWindow = null;
+    updateMiniPiPButton();
+    return;
+  }
+  miniPiPWindow.close();
+  miniPiPWindow = null;
+  updateMiniPiPButton();
+}
+
+function applyMiniSectionVisibility(doc) {
+  const stateEl = doc.getElementById("mini-head");
+  const timerEl = doc.getElementById("mini-focus-block");
+  const mapEl = doc.getElementById("mini-map-wrap");
+  if (stateEl) stateEl.style.display = miniShowSections.state ? "flex" : "none";
+  if (timerEl) timerEl.style.display = miniShowSections.timer ? "flex" : "none";
+  if (mapEl) mapEl.style.display = miniShowSections.map ? "flex" : "none";
+}
+
+let _miniAutoResizing = false;
+let _miniFilterTimer = 0;
+let _miniFilterVisible = true;
+
+function setMiniFilterVisible(show) {
+  if (!isMiniPiPOpen()) return;
+  const row = miniPiPWindow.document.getElementById('mini-filter-row');
+  if (!row || _miniFilterVisible === show) return;
+  _miniFilterVisible = show;
+  row.style.display = show ? 'flex' : 'none';
+  autoResizeMiniPiP();
+}
+
+function resetMiniFilterTimer() {
+  clearTimeout(_miniFilterTimer);
+  if (!_miniFilterVisible) setMiniFilterVisible(true);
+  _miniFilterTimer = setTimeout(() => setMiniFilterVisible(false), 10000);
+}
+
+function autoResizeMiniPiP() {
+  if (!isMiniPiPOpen() || typeof miniPiPWindow.resizeTo !== 'function') return;
+  const card = miniPiPWindow.document.getElementById('mini-card');
+  if (!card) return;
+  const chrome = (miniPiPWindow.outerHeight - miniPiPWindow.innerHeight) || 0;
+  const targetH = card.offsetHeight + chrome;
+  if (targetH === miniPiPWindow.outerHeight) return;
+  _miniAutoResizing = true;
+  try { miniPiPWindow.resizeTo(miniPiPWindow.outerWidth, targetH); } catch (_) {}
+  setTimeout(() => { _miniAutoResizing = false; }, 500);
+}
+
+async function openMiniPiPWindow() {
+  if (!supportsDocumentPiP || isMiniPiPOpen()) return;
+  try {
+    miniPiPWindow = await window.documentPictureInPicture.requestWindow({
+      width: MINI_PANEL_DEFAULT_W,
+      height: MINI_PANEL_DEFAULT_H,
+    });
+    buildMiniPiPWindow(miniPiPWindow);
+    clampMiniPiPPanelSize();
+    miniPiPWindow.addEventListener("resize", () => {
+      if (_miniAutoResizing) return;
+      clampMiniPiPPanelSize();
+      renderMiniPiPStatus();
+    });
+    miniPiPWindow.addEventListener("pagehide", () => {
+      clearTimeout(_miniFilterTimer);
+      miniPiPWindow = null;
+      updateMiniPiPButton();
+    }, { once: true });
+    updateMiniPiPButton();
+    renderMiniPiPStatus();
+    startMiniMapLoop();
+    autoResizeMiniPiP();
+  } catch (err) {
+    console.warn("[MiniPiP] Failed to open mini window:", err);
+    miniPiPWindow = null;
+    updateMiniPiPButton();
+  }
+}
+
+if (miniPiPToggle) {
+  miniPiPToggle.addEventListener("click", async () => {
+    if (isMiniPiPOpen()) {
+      closeMiniPiPWindow();
+    } else {
+      await openMiniPiPWindow();
+    }
+  });
+  updateMiniPiPButton();
+}
+
+setInterval(() => {
+  if (isMiniPiPOpen()) renderMiniPiPStatus();
+}, 300);
+
+function closeSettingsPanel() {
+  if (settingsPanel) settingsPanel.classList.remove("open");
+}
+
+// Auth UI update
+function updateAuthUI() {
+  const authSection = document.getElementById("settings-auth-section");
+  if (!authSection) return;
+  if (isRegistered && authUsername) {
+    authSection.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;">
+      <span style="color:#7ec8e3;font-size:14px;">${t("authLoggedInAs")} <b>${authUsername}</b></span>
+      <button id="auth-logout-btn" style="background:#0f1b38;color:#e74c3c;border:1px solid #0f3460;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:bold;">${t("authLogout")}</button>
+    </div>`;
+    document.getElementById("auth-logout-btn")?.addEventListener("click", handleLogout);
+  } else {
+    authSection.innerHTML = `<div style="display:flex;gap:8px;">
+      <button id="auth-login-link" style="flex:1;background:#16213e;color:#7ec8e3;border:1px solid #0f3460;padding:6px 8px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:bold;">${t("authLogin")}</button>
+      <button id="auth-register-link" style="flex:1;background:#16213e;color:#f5a623;border:1px solid #0f3460;padding:6px 8px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:bold;">${t("authRegister")}</button>
+    </div>`;
+    document.getElementById("auth-login-link")?.addEventListener("click", () => showAuthForm("login"));
+    document.getElementById("auth-register-link")?.addEventListener("click", () => showAuthForm("register"));
+  }
+  // Update welcome popup auth links
+  const welcomeAuthLinks = document.getElementById("welcome-auth-links");
+  if (welcomeAuthLinks) {
+    welcomeAuthLinks.style.display = isRegistered ? "none" : "flex";
+  }
+}
+
+function showAuthForm(mode) {
+  const popup = document.getElementById("auth-popup");
+  if (!popup) return;
+  const title = mode === "login" ? t("authLogin") : t("authRegister");
+  popup.querySelector(".auth-popup-title").textContent = title;
+  popup.querySelector("#auth-submit").textContent = t("authSubmit");
+  popup.querySelector("#auth-back").textContent = t("authBack");
+  popup.querySelector("#auth-username").placeholder = t("authUsername");
+  popup.querySelector("#auth-password").placeholder = t("authPassword");
+  popup.dataset.mode = mode;
+  popup.querySelector("#auth-username").value = "";
+  popup.querySelector("#auth-password").value = "";
+  popup.querySelector("#auth-error").textContent = "";
+  popup.style.display = "flex";
+  popup.querySelector("#auth-username").focus();
+  closeSettingsPanel();
+}
+
+function hideAuthForm() {
+  const popup = document.getElementById("auth-popup");
+  if (popup) popup.style.display = "none";
+}
+
+async function submitAuthForm() {
+  const popup = document.getElementById("auth-popup");
+  if (!popup) return;
+  const mode = popup.dataset.mode;
+  const username = popup.querySelector("#auth-username").value.trim();
+  const password = popup.querySelector("#auth-password").value;
+  const errorEl = popup.querySelector("#auth-error");
+
+  if (!username || !password) { errorEl.textContent = t("authErrRequired"); return; }
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) { errorEl.textContent = t("authErrShortUser"); return; }
+  if (password.length < 6) { errorEl.textContent = t("authErrShortPass"); return; }
+
+  errorEl.textContent = "";
+  const submitBtn = popup.querySelector("#auth-submit");
+  submitBtn.disabled = true;
+
+  try {
+    let result;
+    if (mode === "register") {
+      // Include current profile data for migration
+      const profileData = {
+        name: localPlayer?.name || localStorage.getItem("playerName") || "Anonymous",
+        character: localPlayer?.character || selectedCharConfig,
+        tagline: localPlayer?.tagline || localStorage.getItem("playerTagline") || "",
+        languages: localPlayer?.languages || JSON.parse(localStorage.getItem("playerLanguages") || "[]"),
+      };
+      result = await apiRegister(username, password, profileData);
+    } else {
+      result = await apiLogin(username, password);
+    }
+
+    if (result.ok) {
+      hideAuthForm();
+      handleAuthSuccess(result.token, result.username || username, result.profile);
+    } else {
+      errorEl.textContent = result.error || t("authErrNetwork");
+    }
+  } catch (e) {
+    errorEl.textContent = t("authErrNetwork");
+  } finally {
+    submitBtn.disabled = false;
+  }
+}
+
+if (settingsPanel && settingsIcon && settingsDetail) {
+  if (profileTrigger) {
+    profileTrigger.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openWelcomeEditorFromSettings();
+    });
+  }
+  settingsIcon.addEventListener("click", (e) => {
+    e.stopPropagation();
+    settingsPanel.classList.toggle("open");
+  });
+
+  settingsDetail.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+  document.addEventListener("click", (e) => {
+    if (!settingsPanel.contains(e.target)) closeSettingsPanel();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeSettingsPanel();
+  });
+}
 
 nameInput.addEventListener("change", () => {
   const name = nameInput.value.trim();
@@ -2896,36 +6074,243 @@ nameInput.addEventListener("change", () => {
 // Welcome popup for first-time users
 const welcomePopup = document.getElementById("welcome-popup");
 const welcomeNameInput = document.getElementById("welcome-name");
+const welcomeTaglineInput = document.getElementById("welcome-tagline");
 const welcomeEnter = document.getElementById("welcome-enter");
+const welcomeLangTags = document.getElementById("welcome-lang-tags");
+const welcomeTimeDisplay = document.getElementById("welcome-time-display");
+const welcomeLangLabel = document.getElementById("welcome-lang-label");
 const savedName = localStorage.getItem("playerName");
+let editingFromSettings = false;
+
+function openWelcomeEditorFromSettings() {
+  editingFromSettings = true;
+  closeSettingsPanel();
+  if (welcomeNameInput) welcomeNameInput.value = (localPlayer && localPlayer.name) || localStorage.getItem("playerName") || "";
+  if (welcomeTaglineInput) welcomeTaglineInput.value = savedTagline || "";
+  updateCharCounter(welcomeNameInput, "welcome-name-counter", "name");
+  updateCharCounter(welcomeTaglineInput, "welcome-tagline-counter", "tagline");
+  renderAllLanguageTags();
+  updateWelcomeTimeDisplay();
+  welcomePopup.classList.remove("hidden");
+  if (welcomeNameInput) welcomeNameInput.focus();
+}
+
+function syncTagline(tagline) {
+  savedTagline = tagline;
+  localStorage.setItem("playerTagline", tagline);
+  if (welcomeTaglineInput && document.activeElement !== welcomeTaglineInput) welcomeTaglineInput.value = tagline;
+  if (taglineInput && document.activeElement !== taglineInput) taglineInput.value = tagline;
+  if (localPlayer) {
+    localPlayer.tagline = tagline;
+    socket.emit("setTagline", tagline);
+  }
+  updateCharCounter(welcomeTaglineInput, "welcome-tagline-counter", "tagline");
+  updateCharCounter(taglineInput, "tagline-input-counter", "tagline");
+}
+
+function renderLanguageTags(container) {
+  if (!container) return;
+  container.querySelectorAll(".lang-tag").forEach(btn => {
+    btn.classList.toggle("selected", selectedLanguages.includes(btn.dataset.lang));
+  });
+}
+
+function renderAllLanguageTags() {
+  renderLanguageTags(welcomeLangTags);
+  renderLanguageTags(settingsLangTags);
+}
+
+function syncLanguages() {
+  localStorage.setItem("playerLanguages", JSON.stringify(selectedLanguages));
+  renderAllLanguageTags();
+  if (localPlayer) {
+    localPlayer.languages = [...selectedLanguages];
+    socket.emit("setLanguages", selectedLanguages);
+  }
+}
+
+function bindLanguageTags(container) {
+  if (!container) return;
+  container.querySelectorAll(".lang-tag").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const lang = btn.dataset.lang;
+      if (selectedLanguages.includes(lang)) {
+        if (selectedLanguages.length <= 1) return; // keep at least one
+        selectedLanguages = selectedLanguages.filter(l => l !== lang);
+      } else {
+        selectedLanguages.push(lang);
+      }
+      syncLanguages();
+    });
+  });
+}
+
+function syncTimezoneHour() {
+  const hour = new Date().getHours();
+  if (localPlayer) {
+    localPlayer.timezoneHour = hour;
+    socket.emit("setTimezoneHour", hour);
+  }
+}
+
+// Initialize time display
+function updateWelcomeTimeDisplay() {
+  const tp = getTimePeriod();
+  const text = tp.emoji + " " + t(tp.key);
+  if (welcomeTimeDisplay) welcomeTimeDisplay.textContent = text;
+  if (settingsTimeDisplay) settingsTimeDisplay.textContent = text;
+}
+
+bindLanguageTags(welcomeLangTags);
+bindLanguageTags(settingsLangTags);
+renderAllLanguageTags();
+
+if (taglineInput) {
+  taglineInput.value = savedTagline;
+  taglineInput.addEventListener("change", () => {
+    syncTagline(taglineInput.value.trim());
+  });
+  taglineInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      syncTagline(taglineInput.value.trim());
+      taglineInput.blur();
+    }
+  });
+}
+
+// Character counters (CJK = 2, others = 1)
+function displayWidth(str) {
+  let w = 0;
+  for (const ch of str) {
+    const code = ch.codePointAt(0);
+    // CJK Unified, CJK Ext-A/B, Hangul, Kana, fullwidth
+    w += (code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF) ||
+         (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFE30 && code <= 0xFE4F) ||
+         (code >= 0xFF00 && code <= 0xFFEF) || (code >= 0x20000 && code <= 0x2FA1F) ? 2 : 1;
+  }
+  return w;
+}
+
+function truncateToDisplayWidth(str, max) {
+  let w = 0;
+  let i = 0;
+  for (const ch of str) {
+    const code = ch.codePointAt(0);
+    const cw = (code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF) ||
+               (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFE30 && code <= 0xFE4F) ||
+               (code >= 0xFF00 && code <= 0xFFEF) || (code >= 0x20000 && code <= 0x2FA1F) ? 2 : 1;
+    if (w + cw > max) break;
+    w += cw;
+    i += ch.length;
+  }
+  return str.slice(0, i);
+}
+
+const CHAR_LIMITS = { name: 20, tagline: 100 };
+
+function updateCharCounter(input, counterId, limitKey) {
+  const counter = document.getElementById(counterId);
+  if (!input || !counter) return;
+  const max = CHAR_LIMITS[limitKey] || 0;
+  const w = displayWidth(input.value);
+  if (w > max) {
+    input.value = truncateToDisplayWidth(input.value, max);
+  }
+  const len = displayWidth(input.value);
+  counter.textContent = len + "/" + max;
+  counter.classList.toggle("at-limit", len >= max);
+}
+
+function bindCharCounter(input, counterId, limitKey) {
+  if (!input) return;
+  const update = () => updateCharCounter(input, counterId, limitKey);
+  input.addEventListener("input", update);
+  input.addEventListener("change", update);
+  update(); // initial
+}
+
+bindCharCounter(welcomeNameInput, "welcome-name-counter", "name");
+bindCharCounter(welcomeTaglineInput, "welcome-tagline-counter", "tagline");
+bindCharCounter(nameInput, "name-input-counter", "name");
+bindCharCounter(taglineInput, "tagline-input-counter", "tagline");
+
+updateWelcomeTimeDisplay();
+
+// Debug helpers (console)
+window.setGameTime = (hour) => setDebugTimeHour(hour);
+window.clearGameTime = () => setDebugTimeHour(null);
+window.getGameTime = () => (debugTimeHour !== null && debugTimeHour !== undefined ? debugTimeHour : new Date().getHours());
+
+// Pre-fill tagline
+if (welcomeTaglineInput && savedTagline) {
+  welcomeTaglineInput.value = savedTagline;
+  updateCharCounter(welcomeTaglineInput, "welcome-tagline-counter", "tagline");
+}
 
 if (savedName) {
   nameInput.value = savedName;
+  updateCharCounter(nameInput, "name-input-counter", "name");
   welcomePopup.classList.add("hidden");
+  hasCheckedIn = true;
+  // Send saved data for returning users
+  setTimeout(() => {
+    if (localPlayer) {
+      if (savedTagline) socket.emit("setTagline", savedTagline);
+      if (selectedLanguages.length) socket.emit("setLanguages", selectedLanguages);
+      syncTimezoneHour();
+    }
+  }, 500);
 } else {
   welcomeNameInput.focus();
 }
 
 function submitWelcome() {
+  const wasEditing = editingFromSettings;
+  editingFromSettings = false;
   const name = welcomeNameInput.value.trim();
   if (!name) return;
+  const tagline = welcomeTaglineInput ? welcomeTaglineInput.value.trim() : "";
   nameInput.value = name;
   localStorage.setItem("playerName", name);
-  localStorage.setItem("playerCharacter", selectedCharacter);
+  localStorage.setItem("charConfig", JSON.stringify(selectedCharConfig));
   if (localPlayer) {
     localPlayer.name = name;
-    localPlayer.character = selectedCharacter;
+    localPlayer.character = selectedCharConfig;
     socket.emit("setName", name);
-    socket.emit("setCharacter", selectedCharacter);
+    socket.emit("setCharacter", selectedCharConfig);
   }
+  syncTagline(tagline);
+  syncLanguages();
+  syncTimezoneHour();
   welcomePopup.classList.add("hidden");
-  setTimeout(() => startEntranceWalk(), 300);
+  hasCheckedIn = true;
+  lastKeyPressTime = Date.now();
+  // Show movement hint on first visit (PC only)
+  if (!wasEditing && !isTouchDevice) {
+    showMoveHint();
+  }
 }
 
 welcomeEnter.addEventListener("click", submitWelcome);
 welcomeNameInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") submitWelcome();
 });
+if (welcomeTaglineInput) {
+  welcomeTaglineInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitWelcome();
+  });
+}
+
+// Auth form event listeners
+document.getElementById("welcome-login-btn")?.addEventListener("click", () => showAuthForm("login"));
+document.getElementById("welcome-register-btn")?.addEventListener("click", () => showAuthForm("register"));
+document.getElementById("auth-back")?.addEventListener("click", hideAuthForm);
+document.getElementById("auth-submit")?.addEventListener("click", submitAuthForm);
+document.getElementById("auth-password")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") submitAuthForm();
+});
+// Initial auth UI state
+updateAuthUI();
 
 statusSelect.addEventListener("change", () => {
   if (localPlayer) {
@@ -2937,11 +6322,49 @@ statusSelect.addEventListener("change", () => {
 
 // --- Chat ---
 let isComposing = false; // Track IME composition state
+let chatScope = "all"; // tab filter: "all" | "room" | "nearby"
+let sendScope = "room"; // input bar scope: "room" | "nearby"
+
+const CHAT_COOLDOWN_MS = 1500;
+const CHAT_BURST_WINDOW = 15000;
+const CHAT_BURST_MAX = 5;
+const CHAT_MUTE_MS = 10000;
+const chatSendTimes = [];
+let chatMutedUntil = 0;
+
+function isChatRateLimited() {
+  const now = Date.now();
+  if (now < chatMutedUntil) return true;
+  if (chatSendTimes.length && now - chatSendTimes[chatSendTimes.length - 1] < CHAT_COOLDOWN_MS) return true;
+  const recent = chatSendTimes.filter(t => now - t < CHAT_BURST_WINDOW);
+  if (recent.length >= CHAT_BURST_MAX) {
+    chatMutedUntil = now + CHAT_MUTE_MS;
+    return true;
+  }
+  return false;
+}
+
+function showChatRateLimitHint() {
+  const chatMsgs = document.getElementById("chat-messages");
+  const div = document.createElement("div");
+  div.className = "chat-msg chat-system";
+  const d = new Date();
+  const ts = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  div.innerHTML = `<span class="chat-time">${ts}</span> <span class="chat-name">[${t("system")}]:</span> ${t("chatRateLimit")}`;
+  chatMsgs.appendChild(div);
+  chatMsgs.scrollTop = chatMsgs.scrollHeight;
+}
 
 function sendChat() {
   const text = chatInput.value.trim();
   if (!text || currentRoom !== "rest") return;
-  socket.emit("chatMessage", text);
+  if (isChatRateLimited()) {
+    showChatRateLimitHint();
+    return;
+  }
+  chatSendTimes.push(Date.now());
+  if (chatSendTimes.length > 20) chatSendTimes.splice(0, chatSendTimes.length - 20);
+  socket.emit("chatMessage", { text, scope: sendScope });
   chatInput.value = "";
 }
 
@@ -2982,6 +6405,59 @@ function updateChatBadge() {
   }
 }
 
+// --- Chat scope tabs ---
+function filterChatMessages() {
+  const msgs = chatMessages.querySelectorAll(".chat-msg:not(.chat-system)");
+  for (const el of msgs) {
+    const s = el.dataset.scope;
+    if (!s) { el.style.display = ""; continue; }
+    if (chatScope === "all") el.style.display = "";
+    else if (chatScope === "room") el.style.display = s === "room" ? "" : "none";
+    else if (chatScope === "nearby") el.style.display = s === "nearby" ? "" : "none";
+  }
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// --- Input bar scope label (independent toggle) ---
+const chatScopeLabel = document.getElementById("chat-scope-label");
+
+function updateScopeLabel() {
+  chatScopeLabel.textContent = sendScope === "nearby" ? t("chatNearby") : t("chatRoom");
+  chatScopeLabel.style.color = sendScope === "nearby" ? "#7ee6a8" : "#ddd";
+}
+
+let nearbyHintShown = false;
+
+function showNearbyHint() {
+  if (nearbyHintShown) return;
+  nearbyHintShown = true;
+  const now = new Date();
+  const ts = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}:${String(now.getSeconds()).padStart(2,"0")}`;
+  const div = document.createElement("div");
+  div.className = "chat-msg chat-hint";
+  div.dataset.scope = "nearby";
+  div.innerHTML = `${ts} <span class="chat-name">[${t("system")}]:</span> ${t("nearbyHint")}`;
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+chatScopeLabel.addEventListener("click", () => {
+  sendScope = sendScope === "room" ? "nearby" : "room";
+  updateScopeLabel();
+  if (sendScope === "nearby") showNearbyHint();
+});
+
+// --- Tab filter (controls which messages are visible) ---
+document.querySelectorAll(".chat-tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".chat-tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    chatScope = btn.dataset.scope;
+    if (chatScope === "nearby") showNearbyHint();
+    filterChatMessages();
+  });
+});
+
 // --- Chat bubbles above characters ---
 const chatBubbles = {};
 const BUBBLE_DURATION = 5000;
@@ -2998,23 +6474,28 @@ function addChatMessage(msg, isHistory) {
     return;
   }
 
-  // Timestamp
+  // Timestamp with seconds
   const date = new Date(msg.time);
-  const timeStr = `${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}`;
-
-  // Name color from player ID, lightened for dark background
-  const nameColor = msg.id ? lightenColor(hashColor(msg.id), 0.35) : "#f5a623";
+  const timeStr = `${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}:${String(date.getSeconds()).padStart(2,"0")}`;
 
   const div = document.createElement("div");
-  div.className = "chat-msg";
-  div.innerHTML = `<span class="chat-time">${timeStr}</span> <span class="chat-name" style="color:${nameColor}">${escapeHtml(msg.name)}</span> <span class="chat-text">${escapeHtml(msg.text)}</span>`;
+  const msgScope = msg.scope || "room";
+  div.className = `chat-msg chat-${msgScope}`;
+  div.dataset.scope = msgScope;
+  const scopeLabel = msgScope === "nearby" ? t("chatNearby") : t("chatRoom");
+  div.innerHTML = `${timeStr} [${scopeLabel}] <span class="chat-name">[${escapeHtml(msg.name)}]:</span> ${escapeHtml(msg.text)}`;
+
+  // Filter visibility based on current tab
+  if (chatScope === "room" && msgScope !== "room") div.style.display = "none";
+  else if (chatScope === "nearby" && msgScope !== "nearby") div.style.display = "none";
+
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
   // Chat bubble + unread badge (skip for history)
   if (!isHistory) {
     if (msg.id) {
-      chatBubbles[msg.id] = { text: msg.text.length > 30 ? msg.text.slice(0, 30) + "..." : msg.text, time: Date.now() };
+      chatBubbles[msg.id] = { text: msg.text.length > 30 ? msg.text.slice(0, 30) + "..." : msg.text, time: Date.now(), scope: msgScope };
     }
     if (chatPanel.classList.contains("collapsed")) {
       unreadCount++;
@@ -3029,7 +6510,7 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-const FOCUS_STATUS_KEYS = ["studying", "working", "reading", "coding"];
+const FOCUS_STATUS_KEYS = ["working", "studying", "reading", "writing", "creating", "exercising", "coding"];
 const REST_STATUS_KEYS = ["resting", "chatting", "listening", "watching", "napping", "snacking", "browsing"];
 
 let roomLabelTimer = null;
@@ -3043,6 +6524,8 @@ function showRoomLabel() {
 }
 
 function updateRoomUI() {
+  hidePlayerCard();
+  hideOverlapSelector();
   roomLabel.textContent = currentRoom === "focus" ? t("focusZone") : t("lounge");
   roomLabel.className = currentRoom; // sets "focus" or "rest"
   // showRoomLabel adds "visible" after className is set
@@ -3098,7 +6581,7 @@ const focusTimeValue = document.getElementById("focus-time-value");
 const autowalkHint = document.getElementById("autowalk-hint");
 const categoryBtns = document.querySelectorAll(".focus-cat-btn");
 
-let selectedCategory = "studying";
+let selectedCategory = "working";
 
 categoryBtns.forEach(btn => {
   btn.addEventListener("click", () => {
@@ -3116,7 +6599,7 @@ focusBtn.addEventListener("click", () => {
     focusPopup.style.display = "flex";
     categoryBtns.forEach(b => b.classList.remove("selected"));
     categoryBtns[0].classList.add("selected");
-    selectedCategory = "studying";
+    selectedCategory = "working";
     focusTaskInput.value = "";
     focusTaskInput.focus();
   }
@@ -3133,10 +6616,28 @@ focusCancel.addEventListener("click", () => {
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    const authPopup = document.getElementById("auth-popup");
+    if (authPopup && authPopup.style.display !== "none") { hideAuthForm(); return; }
     if (focusPopup.style.display !== "none") focusPopup.style.display = "none";
     if (focusPortalConfirm.style.display !== "none") {
       focusPortalConfirm.style.display = "none";
       focusPortalPending = false;
+      portalCooldown = 60;
+      // Push player away from portal (same as "No" button)
+      const map = getCurrentMap();
+      if (map && localPlayer) {
+        let sumY = 0, count = 0;
+        for (let r = 0; r < map.length; r++) {
+          for (let c = 0; c < (map[r] ? map[r].length : 0); c++) {
+            if (map[r][c] === PORTAL_TILE) { sumY += r * TILE + TILE / 2; count++; }
+          }
+        }
+        if (count > 0) {
+          const portalY = sumY / count;
+          const midY = map.length * TILE / 2;
+          localPlayer.y = portalY + (portalY < midY ? 2 : -2) * TILE;
+        }
+      }
     }
   }
 });
@@ -3156,7 +6657,6 @@ focusPortalYes.addEventListener("click", () => {
   endFocus();
   // Now trigger the room change
   const newRoom = currentRoom === "focus" ? "rest" : "focus";
-  playDoorSound();
   socket.emit("changeRoom", newRoom);
   portalCooldown = 60;
 });
@@ -3165,18 +6665,25 @@ focusPortalNo.addEventListener("click", () => {
   focusPortalConfirm.style.display = "none";
   focusPortalPending = false;
   portalCooldown = 60;
-  // Push player to safe position away from portal
-  if (currentRoom === "focus") {
-    // Focus portal is at bottom (row 16), move to row 14
-    localPlayer.y = 14 * TILE + TILE / 2;
-  } else {
-    // Rest portal is at top (row 1), move to row 3
-    localPlayer.y = 3 * TILE + TILE / 2;
+  // Push player 2 tiles away from portal (into the room)
+  const map = getCurrentMap();
+  if (map && localPlayer) {
+    let sumY = 0, count = 0;
+    for (let r = 0; r < map.length; r++) {
+      for (let c = 0; c < (map[r] ? map[r].length : 0); c++) {
+        if (map[r][c] === PORTAL_TILE) { sumY += r * TILE + TILE / 2; count++; }
+      }
+    }
+    if (count > 0) {
+      const portalY = sumY / count;
+      const midY = map.length * TILE / 2;
+      localPlayer.y = portalY + (portalY < midY ? 2 : -2) * TILE;
+    }
   }
 });
 
 function getCategoryLabel(category) {
-  const map = { studying: "catStudying", working: "catWorking", creating: "catCreating", reading: "catReading" };
+  const map = { working: "catWorking", studying: "catStudying", reading: "catReading", writing: "catWriting", creating: "catCreating", exercising: "catExercising" };
   return t(map[category] || category);
 }
 
@@ -3185,6 +6692,7 @@ function startFocus(category, taskName) {
   focusStartTime = Date.now();
   focusCategory = category;
   focusTaskName = taskName || getCategoryLabel(category);
+  miniFocusTaskDraft = taskName || miniFocusTaskDraft;
   lastKeyPressTime = Date.now();
   autoWalking = false;
   postFocusTime = 0;
@@ -3199,6 +6707,7 @@ function startFocus(category, taskName) {
   }
 
   socket.emit("startFocus", { category });
+  localStorage.setItem("currentFocusTask", focusTaskName);
   updateFocusUI();
 }
 
@@ -3227,6 +6736,7 @@ function endFocus() {
   }
 
   socket.emit("endFocus");
+  localStorage.removeItem("currentFocusTask");
   updateFocusUI();
 }
 
@@ -3234,6 +6744,7 @@ function updateFocusUI() {
   if (currentRoom !== "focus") {
     focusBtn.style.display = "none";
     focusTimerDisplay.style.display = "none";
+    renderMiniPiPStatus();
     return;
   }
 
@@ -3249,6 +6760,7 @@ function updateFocusUI() {
     focusBtn.classList.remove("active");
     focusTimerDisplay.style.display = "none";
   }
+  renderMiniPiPStatus();
 }
 
 function formatFocusTime(ms) {
@@ -3340,7 +6852,7 @@ function deleteHistoryRecord(startTime) {
 }
 
 function getCategoryIcon(category) {
-  const icons = { studying: "\u{1F4D6}", working: "\u{1F4BC}", creating: "\u{1F4DD}", reading: "\u{1F4DA}" };
+  const icons = { studying: "\u{1F4D6}", working: "\u{1F4BC}", creating: "\u{1F3A8}", reading: "\u{1F4DA}" };
   return icons[category] || "\u{1F4D6}";
 }
 
@@ -3553,7 +7065,7 @@ function updateFocusSounds() {
 const ambientSounds = {
   morning: new Audio("/sounds/morning.mp3"),         // 6:00 - 11:00
   daytime: new Audio("/sounds/yuk1to-street-ambience-traffic-410714.mp3"), // 11:00 - 17:00
-  night:   new Audio("/sounds/night.mp3"),            // 20:00 - 6:00
+  night:   new Audio("/sounds/night.mp3"),            // 19:00 - 05:00
 };
 for (const key in ambientSounds) {
   ambientSounds[key].loop = true;
@@ -3571,11 +7083,12 @@ for (let c = 4; c < 30; c += 4) {
 }
 
 function getAmbientKey() {
-  const hour = new Date().getHours();
-  if (hour >= 6 && hour < 11) return "morning";
-  if (hour >= 11 && hour < 17) return "daytime";
-  if (hour >= 17 && hour < 20) return "dusk";
-  return "night"; // 20:00 - 6:00
+  const hour = getTimezoneHour();
+  if (hour < 5) return "night";
+  if (hour < 8) return "morning";
+  if (hour < 17) return "daytime";
+  if (hour < 19) return "dusk";
+  return "night"; // 19:00 - 24:00
 }
 
 function stopAllAmbient() {
@@ -3635,6 +7148,32 @@ function playDoorSound() {
   doorAudio.play().catch(() => {});
 }
 
+// Sliding door sound (entrance & jp_door open/close)
+const doorSlidingAudio = new Audio("/sounds/door_sliding.MP3");
+let lastDoorSlideTime = 0;
+function playDoorSlidingSound() {
+  if (!soundEnabled) return;
+  const now = Date.now();
+  if (now - lastDoorSlideTime < 200) return;
+  lastDoorSlideTime = now;
+  doorSlidingAudio.currentTime = 0;
+  doorSlidingAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+  doorSlidingAudio.play().catch(() => {});
+}
+
+// Wooden door sound (studyRoomDoor): play once on open
+const doorWoodenAudio = new Audio("/sounds/door_wooden.mp3");
+let lastDoorWoodenTime = 0;
+function playDoorWoodenSound() {
+  if (!soundEnabled) return;
+  const now = Date.now();
+  if (now - lastDoorWoodenTime < 200) return;
+  lastDoorWoodenTime = now;
+  doorWoodenAudio.currentTime = 0;
+  doorWoodenAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+  doorWoodenAudio.play().catch(() => {});
+}
+
 // Cat meow (proximity-triggered)
 const catMeowAudio = new Audio("/sounds/cat-meow.mp3");
 const CAT_MEOW_DIST = 60;
@@ -3670,6 +7209,182 @@ function updateCatMeow() {
   catWasNear = isNear;
 }
 
+// Campfire sound (proximity-based, only when lit)
+const campfireAudio = new Audio("/sounds/fire.mp3");
+campfireAudio.loop = true;
+campfireAudio.volume = 0;
+const CAMPFIRE_SOUND_MAX_DIST = TILE * 8; // ~8 tiles
+const CAMPFIRE_SOUND_MIN_DIST = TILE * 2;
+const CAMPFIRE_SOUND_MAX_VOL = 0.5;
+
+function updateCampfireSound() {
+  if (!soundEnabled || !localPlayer) {
+    campfireAudio.volume = 0;
+    if (!campfireAudio.paused) campfireAudio.pause();
+    return;
+  }
+
+  const objs = ROOM_DATA[currentRoom].mapObjects;
+  const states = campfireStates[currentRoom];
+  if (!objs || !objs.length || !states) {
+    campfireAudio.volume = 0;
+    if (!campfireAudio.paused) campfireAudio.pause();
+    return;
+  }
+
+  let closestDist = Infinity;
+  for (const obj of objs) {
+    if (!states[obj.id]) continue; // only lit campfires
+    const ts = findTilesetForGID(obj.gid);
+    if (!isCampfireObj(obj, ts)) continue;
+    const { w, h } = getObjDrawSize(obj, ts);
+    const cx = obj.x + w / 2;
+    const cy = obj.y + h / 2;
+    const dx = localPlayer.x - cx;
+    const dy = localPlayer.y - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < closestDist) closestDist = dist;
+  }
+
+  if (!Number.isFinite(closestDist) || closestDist > CAMPFIRE_SOUND_MAX_DIST) {
+    campfireAudio.volume = 0;
+    if (!campfireAudio.paused) campfireAudio.pause();
+  } else {
+    const t = Math.max(0, Math.min(1, (CAMPFIRE_SOUND_MAX_DIST - closestDist) / (CAMPFIRE_SOUND_MAX_DIST - CAMPFIRE_SOUND_MIN_DIST)));
+    const vol = t * t * CAMPFIRE_SOUND_MAX_VOL * (volumeSlider.value / 100);
+    campfireAudio.volume = Math.min(1, Math.max(0, vol));
+    if (campfireAudio.paused) {
+      campfireAudio.play().catch(() => {});
+    }
+  }
+}
+
+// Frog sound (proximity-based)
+const frogAudio = new Audio("/sounds/frog-croaking.mp3");
+frogAudio.loop = true;
+frogAudio.volume = 0;
+const FROG_SOUND_MAX_DIST = TILE * 6; // ~6 tiles
+const FROG_SOUND_MIN_DIST = TILE * 1.5;
+const FROG_SOUND_MAX_VOL = 0.45;
+
+function isFrogObj(obj, ts) {
+  const tsName = ts && ts.name ? ts.name.toLowerCase() : "";
+  const objType = String(obj.type || "").toLowerCase();
+  const objName = String(obj.name || "").toLowerCase();
+  return tsName.includes("frog") || objType.includes("frog") || objName.includes("frog");
+}
+
+function isButterflyObj(obj, ts) {
+  const tsName = ts && ts.name ? ts.name.toLowerCase() : "";
+  const objType = String(obj.type || "").toLowerCase();
+  const objName = String(obj.name || "").toLowerCase();
+  return tsName.includes("butterfly") || objType.includes("butterfly") || objName.includes("butterfly");
+}
+
+function isFishObj(obj, ts) {
+  const tsName = ts && ts.name ? ts.name.toLowerCase() : "";
+  const objType = String(obj.type || "").toLowerCase();
+  const objName = String(obj.name || "").toLowerCase();
+  return tsName.includes("fish") || objType.includes("fish") || objName.includes("fish");
+}
+
+function isWaterObj(obj, ts) {
+  const tsName = ts && ts.name ? ts.name.toLowerCase() : "";
+  const objType = String(obj.type || "").toLowerCase();
+  const objName = String(obj.name || "").toLowerCase();
+  return tsName.includes("water_tileset") || objType.includes("water") || objName.includes("water");
+}
+
+const BUTTERFLY_STATE_HIDDEN = { visible: false, static: false, moveToWater: false };
+const BUTTERFLY_STATE_STATIC = { visible: true, static: true, moveToWater: false };
+const BUTTERFLY_STATE_ACTIVE = { visible: true, static: false, moveToWater: false };
+const BUTTERFLY_STATE_WATER = { visible: true, static: false, moveToWater: true };
+
+function getButterflyState() {
+  const hour = getTimezoneHour();
+  if (hour >= 6 && hour < 8) return BUTTERFLY_STATE_STATIC;
+  if (hour >= 8 && hour < 10) return BUTTERFLY_STATE_ACTIVE;
+  if (hour >= 12 && hour < 14) return BUTTERFLY_STATE_WATER;
+  if (hour >= 15 && hour < 17) return BUTTERFLY_STATE_ACTIVE;
+  return BUTTERFLY_STATE_HIDDEN;
+}
+
+const BUTTERFLY_WATER_POS = { x: 1192, y: 452 };
+const BUTTERFLY_WATER_STILL_MS = 3200;
+const BUTTERFLY_WATER_FLAP_MS = 3200;
+const BUTTERFLY_WATER_FRAME_MS = 700;
+
+function getButterflyWaterFrame(obj, ts, now) {
+  const cycle = BUTTERFLY_WATER_STILL_MS + BUTTERFLY_WATER_FLAP_MS;
+  const offset = (obj.id || 0) * 97;
+  const t = (now + offset) % cycle;
+  if (t < BUTTERFLY_WATER_STILL_MS) return 0;
+  const flapT = t - BUTTERFLY_WATER_STILL_MS;
+  return Math.floor(flapT / BUTTERFLY_WATER_FRAME_MS) % ts.frameCount;
+}
+
+function getButterflyWaterPos(_roomKey, _bw, _bh) {
+  return BUTTERFLY_WATER_POS;
+}
+
+function isFrogActiveTime() {
+  const hour = getTimezoneHour();
+  const isDusk = hour >= 17 && hour < 19;
+  const isNight = hour >= 19 && hour < 24;
+  const isLateNight = hour >= 0 && hour < 5;
+  return isDusk || isNight || isLateNight;
+}
+
+function isFishActiveTime() {
+  const hour = getTimezoneHour();
+  return (hour >= 4 && hour < 8) || (hour >= 15 && hour < 19);
+}
+
+function updateFrogSound() {
+  if (!soundEnabled || !localPlayer) {
+    frogAudio.volume = 0;
+    if (!frogAudio.paused) frogAudio.pause();
+    return;
+  }
+  if (!isFrogActiveTime()) {
+    frogAudio.volume = 0;
+    if (!frogAudio.paused) frogAudio.pause();
+    return;
+  }
+
+  const objs = ROOM_DATA[currentRoom].mapObjects;
+  if (!objs || !objs.length) {
+    frogAudio.volume = 0;
+    if (!frogAudio.paused) frogAudio.pause();
+    return;
+  }
+
+  let closestDist = Infinity;
+  for (const obj of objs) {
+    const ts = findTilesetForGID(obj.gid);
+    if (!isFrogObj(obj, ts)) continue;
+    const { w, h } = getObjDrawSize(obj, ts);
+    const cx = obj.x + w / 2;
+    const cy = obj.y + h / 2;
+    const dx = localPlayer.x - cx;
+    const dy = localPlayer.y - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < closestDist) closestDist = dist;
+  }
+
+  if (!Number.isFinite(closestDist) || closestDist > FROG_SOUND_MAX_DIST) {
+    frogAudio.volume = 0;
+    if (!frogAudio.paused) frogAudio.pause();
+  } else {
+    const t = Math.max(0, Math.min(1, (FROG_SOUND_MAX_DIST - closestDist) / (FROG_SOUND_MAX_DIST - FROG_SOUND_MIN_DIST)));
+    const vol = t * t * FROG_SOUND_MAX_VOL * (volumeSlider.value / 100);
+    frogAudio.volume = Math.min(1, Math.max(0, vol));
+    if (frogAudio.paused) {
+      frogAudio.play().catch(() => {});
+    }
+  }
+}
+
 function startMusic() {}
 function stopMusic() {}
 function switchMusic() {}
@@ -3683,6 +7398,10 @@ musicToggle.addEventListener("click", () => {
       focusSounds[key].volume = 0;
     }
     stopAllAmbient();
+    campfireAudio.pause();
+    campfireAudio.volume = 0;
+    frogAudio.pause();
+    frogAudio.volume = 0;
   }
 });
 volumeSlider.addEventListener("input", () => {});
@@ -3696,35 +7415,115 @@ socket.on("roomDimensions", (dims) => {
   if (dims.rest) ROOM_DIMS.rest = dims.rest;
 });
 
+socket.on("connect", () => {
+  renderMiniPiPStatus();
+});
+
+socket.on("disconnect", () => {
+  renderMiniPiPStatus();
+});
+
 socket.on("currentPlayers", (players) => {
   myId = socket.id;
   for (const id in players) {
     if (id === myId) {
       localPlayer = players[id];
-      // Apply saved name on connect
-      const sn = localStorage.getItem("playerName");
-      if (sn) {
-        localPlayer.name = sn;
-        socket.emit("setName", sn);
-      }
-      // Apply saved character on connect
-      const sc = localStorage.getItem("playerCharacter");
-      if (sc) {
-        localPlayer.character = sc;
-        selectedCharacter = sc;
-        socket.emit("setCharacter", sc);
+      if (isRegistered) {
+        // Registered user: server has authoritative profile from DB
+        // Update local state from server data
+        selectedCharConfig = localPlayer.character;
+        localStorage.setItem("selectedCharacter", JSON.stringify(selectedCharConfig));
+        localStorage.setItem("playerName", localPlayer.name);
+        localStorage.setItem("playerTagline", localPlayer.tagline || "");
+        localStorage.setItem("playerLanguages", JSON.stringify(localPlayer.languages || []));
+      } else {
+        // Guest: apply saved name on connect
+        const sn = localStorage.getItem("playerName");
+        if (sn) {
+          localPlayer.name = sn;
+          socket.emit("setName", sn);
+        }
+        // Apply saved character on connect
+        localPlayer.character = selectedCharConfig;
+        socket.emit("setCharacter", selectedCharConfig);
       }
       currentRoom = localPlayer.room;
       updateRoomUI();
-      // Returning user with saved name: auto-walk from entrance
-      if (sn && currentRoom === "focus") {
-        setTimeout(() => startEntranceWalk(), 300);
-      }
     } else {
       otherPlayers[id] = players[id];
     }
   }
   updateOnlineCount();
+});
+
+socket.on("sessionRestored", (data) => {
+  if (data.resumed) {
+    console.log("[SESSION] Resumed existing session");
+
+    // Restore position/room/state from server snapshot
+    if (localPlayer) {
+      localPlayer.room = data.room;
+      localPlayer.x = data.x;
+      localPlayer.y = data.y;
+      localPlayer.isFocusing = data.isFocusing;
+      localPlayer.focusStartTime = data.focusStartTime;
+      localPlayer.focusCategory = data.focusCategory;
+      localPlayer.giftPile = data.giftPile || [];
+      localPlayer.isSitting = data.isSitting;
+      localPlayer.status = data.status;
+      localSitting = data.isSitting;
+    }
+
+    currentRoom = data.room;
+    updateRoomUI();
+
+    // Restore focus timer state
+    if (data.isFocusing && data.focusStartTime) {
+      isFocusing = true;
+      focusStartTime = data.focusStartTime;
+      focusCategory = data.focusCategory;
+      const savedTask = localStorage.getItem("currentFocusTask");
+      focusTaskName = savedTask || getCategoryLabel(data.focusCategory);
+      updateFocusUI();
+    }
+
+    // Suppress welcome popup and entrance walk
+    hasCheckedIn = true;
+    document.getElementById("welcome-popup").classList.add("hidden");
+    autoWalking = false;
+    autoWalkPath = [];
+    lastKeyPressTime = Date.now();
+  } else {
+    // Store session token from server
+    if (data.sessionToken) localStorage.setItem("sessionToken", data.sessionToken);
+  }
+  // Update auth state from server
+  if (data.isRegistered) {
+    isRegistered = true;
+    if (data.username) authUsername = data.username;
+  }
+  updateAuthUI();
+});
+
+// Visibility API: reset idle timers when tab becomes visible
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) lastKeyPressTime = Date.now();
+});
+
+// Tab close: end focus (save record) + remove player immediately
+window.addEventListener("beforeunload", (e) => {
+  if (isFocusing) {
+    // Save focus record before leaving
+    const elapsed = Date.now() - focusStartTime;
+    saveFocusRecord(focusTaskName, focusCategory, elapsed, focusStartTime);
+    localStorage.removeItem("currentFocusTask");
+    e.preventDefault();       // triggers native "Leave site?" dialog
+  }
+  if (isRecording || recProcessing) {
+    e.preventDefault();       // warn: recording in progress
+  }
+  socket.emit("intentionalClose");
+  recFrames = [];
 });
 
 socket.on("playerJoined", (player) => {
@@ -3733,6 +7532,7 @@ socket.on("playerJoined", (player) => {
 });
 
 socket.on("playerLeft", (id) => {
+  if (playerCardTarget === id) hidePlayerCard();
   delete otherPlayers[id];
   updateOnlineCount();
 });
@@ -3743,16 +7543,22 @@ socket.on("playerMoved", (data) => {
     otherPlayers[data.id].y = data.y;
     otherPlayers[data.id].direction = data.direction;
   }
+  renderMiniPiPStatus();
 });
 
 socket.on("playerUpdated", (player) => {
   if (player.id === myId) {
     localPlayer.name = player.name;
     localPlayer.status = player.status;
-    localPlayer.character = player.character;
+    // Don't overwrite local character — client is source of truth for own character
     localPlayer.isFocusing = player.isFocusing;
     localPlayer.focusStartTime = player.focusStartTime;
     localPlayer.focusCategory = player.focusCategory;
+    localPlayer.isSitting = player.isSitting;
+    localPlayer.tagline = player.tagline;
+    localPlayer.languages = player.languages;
+    localPlayer.timezoneHour = player.timezoneHour;
+    localSitting = player.isSitting;
     updateFocusUI();
   } else if (otherPlayers[player.id]) {
     otherPlayers[player.id].name = player.name;
@@ -3761,6 +7567,10 @@ socket.on("playerUpdated", (player) => {
     otherPlayers[player.id].isFocusing = player.isFocusing;
     otherPlayers[player.id].focusStartTime = player.focusStartTime;
     otherPlayers[player.id].focusCategory = player.focusCategory;
+    otherPlayers[player.id].isSitting = player.isSitting;
+    otherPlayers[player.id].tagline = player.tagline;
+    otherPlayers[player.id].languages = player.languages;
+    otherPlayers[player.id].timezoneHour = player.timezoneHour;
   }
   updateOnlineCount();
 });
@@ -3775,6 +7585,7 @@ socket.on("playerChangedRoom", (data) => {
       focusStartTime = null;
       focusCategory = null;
       focusTaskName = "";
+      localStorage.removeItem("currentFocusTask");
     }
     // Sync localPlayer focus fields
     localPlayer.isFocusing = false;
@@ -3788,6 +7599,8 @@ socket.on("playerChangedRoom", (data) => {
     focusPortalPending = false;
     focusPortalConfirm.style.display = "none";
     postFocusTime = 0; // Clear post-focus state on room change
+    localSitting = false;
+    localPlayer.isSitting = false;
 
     localPlayer.room = data.room;
     localPlayer.x = data.x;
@@ -3803,6 +7616,7 @@ socket.on("playerChangedRoom", (data) => {
     otherPlayers[data.id].isFocusing = false;
     otherPlayers[data.id].focusStartTime = null;
     otherPlayers[data.id].focusCategory = null;
+    otherPlayers[data.id].isSitting = false;
   }
   updateOnlineCount();
 });
@@ -3831,6 +7645,21 @@ socket.on("chatHistory", (history) => {
 
 socket.on("catUpdate", (data) => {
   catData = data;
+  renderMiniPiPStatus();
+});
+
+socket.on("campfireStates", (data) => {
+  if (!data) return;
+  for (const room in data) {
+    if (!campfireStates[room]) campfireStates[room] = {};
+    Object.assign(campfireStates[room], data[room]);
+  }
+});
+
+socket.on("campfireUpdate", (data) => {
+  if (!data || !data.room || data.id == null) return;
+  if (!campfireStates[data.room]) campfireStates[data.room] = {};
+  campfireStates[data.room][data.id] = !!data.lit;
 });
 
 socket.on("emojiReaction", (data) => {
@@ -3855,9 +7684,12 @@ function updateOnlineCount() {
     if (otherPlayers[id].room === "focus") focusCount++; else loungeCount++;
   }
   const total = focusCount + loungeCount;
-  onlineTotal.textContent = `🟢 ${total}`;
-  onlineFocus.textContent = `📖 ${t("focusZone")}: ${focusCount}`;
-  onlineLounge.textContent = `☕ ${t("lounge")}: ${loungeCount}`;
+  miniOnlineCounts = { total, focus: focusCount, lounge: loungeCount };
+  if (onlineCount) onlineCount.textContent = String(total);
+  else onlineTotal.textContent = `🟢 ${total}`;
+  setOnlineDetailSegment(onlineFocus, "📖", t("focusZone"), focusCount);
+  setOnlineDetailSegment(onlineLounge, "☕", t("lounge"), loungeCount);
+  renderMiniPiPStatus();
 }
 
 // ============================================================
@@ -3866,24 +7698,31 @@ function updateOnlineCount() {
 
 let lastSentX = 0;
 let lastSentY = 0;
+let lastMoveTime = 0; // timestamp of last player movement
+let lastFrameTime = performance.now();
 
-function update() {
+function update(dt) {
   if (!localPlayer) return;
+  const dtScale = dt / 16.667; // normalize to 60fps
 
   // Portal cooldown
   if (portalCooldown > 0) portalCooldown--;
 
   let dx = 0;
   let dy = 0;
-  if (keys.up) dy -= SPEED;
-  if (keys.down) dy += SPEED;
-  if (keys.left) dx -= SPEED;
-  if (keys.right) dx += SPEED;
+  if (!localSitting) {
+    if (keys.up) dy -= SPEED;
+    if (keys.down) dy += SPEED;
+    if (keys.left) dx -= SPEED;
+    if (keys.right) dx += SPEED;
+  }
 
   if (dx !== 0 && dy !== 0) {
     dx *= 0.707;
     dy *= 0.707;
   }
+  dx *= dtScale;
+  dy *= dtScale;
 
   const newX = localPlayer.x + dx;
   const newY = localPlayer.y + dy;
@@ -3909,9 +7748,11 @@ function update() {
   updateFocusSounds();
   updateCatMeow();
   updateAmbientSound();
+  updateCampfireSound();
+  updateFrogSound();
 
   // Wandering idle: 5min → daydreaming, 10min → auto-walk to Lounge
-  if (!isFocusing && currentRoom === "focus" && !autoWalking) {
+  if (hasCheckedIn && !isFocusing && currentRoom === "focus" && !autoWalking) {
     const idleTime = Date.now() - lastKeyPressTime;
     if (idleTime > IDLE_LEAVE_MS) {
       startAutoWalk();
@@ -3927,43 +7768,37 @@ function update() {
     }
   }
 
-  // Auto-walk with waypoint queue + stuck detection
+  // Auto-walk following BFS path waypoints
   if (autoWalking && autoWalkPath.length > 0) {
     const target = autoWalkPath[0];
     const awDx = target.x - localPlayer.x;
     const awDy = target.y - localPlayer.y;
     const awDist = Math.sqrt(awDx * awDx + awDy * awDy);
     if (awDist < 4) {
-      autoWalkPath.shift(); // reached waypoint, go to next
+      autoWalkPath.shift();
     } else {
-      const awSpeed = 1.5;
+      const awSpeed = 1.5 * dtScale;
       const nx = localPlayer.x + (awDx / awDist) * awSpeed;
       const ny = localPlayer.y + (awDy / awDist) * awSpeed;
-      const movedX = canMoveTo(nx, localPlayer.y);
-      const movedY = canMoveTo(localPlayer.x, ny);
-      if (movedX) localPlayer.x = nx;
-      if (movedY) localPlayer.y = ny;
-
-      // Stuck detection: if blocked on both axes, nudge perpendicular
-      if (!movedX && !movedY) {
+      if (canMoveTo(nx, ny)) {
+        localPlayer.x = nx;
+        localPlayer.y = ny;
+        awStuckFrames = 0;
+      } else if (canMoveTo(nx, localPlayer.y)) {
+        localPlayer.x = nx;
+        awStuckFrames = 0;
+      } else if (canMoveTo(localPlayer.x, ny)) {
+        localPlayer.y = ny;
+        awStuckFrames = 0;
+      } else {
         awStuckFrames++;
-        if (awStuckFrames > 8) {
-          const nudge = (awStuckFrames % 30 < 15) ? 3 : -3;
-          if (Math.abs(awDx) >= Math.abs(awDy)) {
-            if (canMoveTo(localPlayer.x, localPlayer.y + nudge)) localPlayer.y += nudge;
-            else if (canMoveTo(localPlayer.x, localPlayer.y - nudge)) localPlayer.y -= nudge;
-          } else {
-            if (canMoveTo(localPlayer.x + nudge, localPlayer.y)) localPlayer.x += nudge;
-            else if (canMoveTo(localPlayer.x - nudge, localPlayer.y)) localPlayer.x -= nudge;
-          }
-        }
-        // If truly stuck for too long, skip to next waypoint
-        if (awStuckFrames > 120) {
-          autoWalkPath.shift();
+        if (awStuckFrames > 60) {
+          // Recalculate path from current position
+          const finalTarget = autoWalkPath[autoWalkPath.length - 1];
+          const newPath = findClientPath(localPlayer.x, localPlayer.y, finalTarget.x, finalTarget.y);
+          autoWalkPath = newPath || [];
           awStuckFrames = 0;
         }
-      } else {
-        awStuckFrames = 0;
       }
 
       if (Math.abs(awDy) >= Math.abs(awDx)) {
@@ -3974,10 +7809,6 @@ function update() {
     }
     if (autoWalkPath.length === 0) {
       autoWalking = false;
-      if (entranceWalking) {
-        entranceWalking = false;
-        document.getElementById("autowalk-hint").style.display = "none";
-      }
     }
   }
 
@@ -3990,7 +7821,6 @@ function update() {
       portalCooldown = 30;
     } else if (!isFocusing) {
       const newRoom = currentRoom === "focus" ? "rest" : "focus";
-      playDoorSound();
       socket.emit("changeRoom", newRoom);
       portalCooldown = 60;
     }
@@ -4005,13 +7835,62 @@ function update() {
     });
     lastSentX = localPlayer.x;
     lastSentY = localPlayer.y;
+    lastMoveTime = Date.now();
   }
 
+}
+
+// Y-sorted rendering: interleave object-layer tile rows with entities (players, cat)
+// so that entities appear behind tall furniture when walking above it
+function drawYSortedEntities() {
+  const rd = ROOM_DATA[currentRoom];
+  const dims = ROOM_DIMS[currentRoom] || ROOM_DIMS.focus;
+  const rows = dims.rows, cols = dims.cols;
+  const objCache = getObjectCache(currentRoom);
+
+  // Collect all entities with their sort Y (feet/base position)
+  const entities = [];
+  if (catData.room === currentRoom) {
+    entities.push({ type: 0, sortY: catData.y });
+  }
+  for (const id in otherPlayers) {
+    const p = otherPlayers[id];
+    if (p.room === currentRoom) {
+      entities.push({ type: 1, p: p, local: false, sortY: p.y });
+    }
+  }
+  if (localPlayer) {
+    entities.push({ type: 1, p: localPlayer, local: true, sortY: localPlayer.y });
+  }
+  entities.sort((a, b) => a.sortY - b.sortY);
+
+  const drawEntity = (e) => {
+    if (e.type === 0) { drawCatBody(); drawCatUI(); }
+    else { drawFocusAura(e.p); drawPlayerBody(e.p, e.local); drawGiftPile(e.p); }
+  };
+
+  if (objCache) {
+    // Y-sorted: draw object tile rows interleaved with entities
+    const w = cols * TILE;
+    let ei = 0;
+    for (let r = 0; r < rows; r++) {
+      const rowBottom = (r + 1) * TILE;
+      ctx.drawImage(objCache, 0, r * TILE, w, TILE, 0, r * TILE, w, TILE);
+      while (ei < entities.length && entities[ei].sortY < rowBottom) drawEntity(entities[ei++]);
+    }
+    while (ei < entities.length) drawEntity(entities[ei++]);
+  } else {
+    // No object cache (fallback mode drew objects already), just draw entities sorted by Y
+    for (const e of entities) drawEntity(e);
+  }
 }
 
 function draw() {
   ctx = mainCtx;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Show nothing until assets are loaded (overlay covers the canvas)
+  if (!gameReady) return;
 
   // Apply camera transform
   updateCamera();
@@ -4025,33 +7904,121 @@ function draw() {
   portalLabelDrawnThisFrame = false;
   updateDoors();
   drawRoom();
-  drawWindowLightSpills();
-  updateAndDrawDustMotes();
-  drawMapObjects();
-  drawCatBody();
-  drawCatUI();
+  // Walkable object tiles (chairs, sofas) always below entities
+  const walkCache = getWalkableObjCache(currentRoom);
+  if (walkCache) ctx.drawImage(walkCache, 0, 0);
+  // drawWindowLightSpills();  // disabled: window light spills
+  // updateAndDrawDustMotes(); // disabled: dust motes
+  drawMapObjects(ROOM_DATA[currentRoom].mapObjectsBelow);
 
+  // Y-sorted pass: blocking tile rows interleaved with cat + players
+  drawYSortedEntities();
+
+  drawAboveLayers();
+  drawMapObjects(ROOM_DATA[currentRoom].mapObjectsAbove);
+
+  // Outdoor shading (per-tile, time-dependent)
+  drawOutdoorShade();
+  // Campfire light glow (above outdoor shade)
+  drawCampfireLight();
+  // Campfire animation should appear above static tiles and outdoor shade
+  drawCampfireObjects();
+
+  // Draw player labels + UI ABOVE all tile layers
   for (const id in otherPlayers) {
     if (otherPlayers[id].room === currentRoom) {
-      drawPlayerBody(otherPlayers[id], false);
-      drawGiftPile(otherPlayers[id]);
       drawPlayerLabel(otherPlayers[id]);
-      drawPlayerFire(otherPlayers[id]);
       drawChatBubble(otherPlayers[id]);
     }
   }
   if (localPlayer) {
-    drawPlayerBody(localPlayer, true);
-    drawGiftPile(localPlayer);
     drawPlayerLabel(localPlayer);
-    drawPlayerFire(localPlayer);
     drawChatBubble(localPlayer);
   }
 
-  drawAboveLayers();
+  // First-time interaction hint trigger
+  if (hoveredPlayerId && otherPlayers[hoveredPlayerId]) {
+    if (!interactHintShown && interactHintTimer === 0) {
+      interactHintTimer = 300; // ~5 seconds at 60fps
+      interactHintShown = true;
+      localStorage.setItem("interactHintShown", "1");
+    }
+  }
+  // Draw first-time hint text (fades out)
+  if (interactHintTimer > 0) {
+    interactHintTimer--;
+    const hintAlpha = interactHintTimer > 60 ? 1 : interactHintTimer / 60;
+    if (hoveredPlayerId && otherPlayers[hoveredPlayerId]) {
+      const hp = otherPlayers[hoveredPlayerId];
+      ctx.save();
+      ctx.globalAlpha = hintAlpha;
+      ctx.font = "bold 14px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#fff";
+      ctx.strokeStyle = "rgba(0,0,0,0.6)";
+      ctx.lineWidth = 3;
+      const hintText = t("clickToInteract");
+      ctx.strokeText(hintText, hp.x, hp.y - 60);
+      ctx.fillText(hintText, hp.x, hp.y - 60);
+      ctx.restore();
+    }
+  }
+
+  // Draw E-key interact prompt near campfire / sittable seat (hide after 5s idle)
+  if (localPlayer && !localSitting && !isTouchDevice) {
+    const idleMs = Date.now() - lastMoveTime;
+    const eKeyVisible = idleMs < 5000;
+    const eKeyFade = idleMs >= 4000 && idleMs < 5000 ? 1 - (idleMs - 4000) / 1000 : eKeyVisible ? 1 : 0;
+    if (eKeyFade > 0) {
+      const _camp = getNearestCampfire();
+      const _campNear = _camp && _camp.dist <= CAMPFIRE_INTERACT_DIST;
+      const _seat = _campNear ? null : getNearestSittable(localPlayer.x, localPlayer.y);
+      if (_campNear) {
+        ctx.save();
+        ctx.globalAlpha = eKeyFade;
+        const kx = _camp.x, ky = _camp.y - 28;
+        const ks = 20; // square size
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.beginPath();
+        ctx.roundRect(kx - ks / 2, ky - ks / 2, ks, ks, 4);
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(kx - ks / 2, ky - ks / 2, ks, ks, 4);
+        ctx.stroke();
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 14px 'MiSans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("E", kx, ky);
+        ctx.restore();
+      } else if (_seat) {
+        ctx.save();
+        ctx.globalAlpha = eKeyFade;
+        const _seatEntry = SEATS[currentRoom] && SEATS[currentRoom][_seat.row + "," + _seat.col];
+        const kx = _seat.x + (_seatEntry && _seatEntry.manual ? (_seatEntry.dx || 0) : 0), ky = _seat.y - 28;
+        const ks = 20; // square size
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.beginPath();
+        ctx.roundRect(kx - ks / 2, ky - ks / 2, ks, ks, 4);
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(kx - ks / 2, ky - ks / 2, ks, ks, 4);
+        ctx.stroke();
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 14px 'MiSans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("E", kx, ky);
+        ctx.restore();
+      }
+    }
+  }
 
   updateAndDrawHearts();
-  updateAndDrawFire();
   updateAndDrawScatterGifts();
 
   // Restore to screen space for vignette
@@ -4060,6 +8027,33 @@ function draw() {
 
   // Draw reaction emojis AFTER vignette so they are not darkened
   updateAndDrawReactionEmojis();
+}
+
+function drawOutdoorShade() {
+  const tv = TIME_VISUALS[cachedTimeKey];
+  if (!tv || !tv.outdoorShadeAlpha || tv.outdoorShadeAlpha <= 0) return;
+  const mask = getOutdoorMask(currentRoom);
+  if (!mask) return;
+  // Composite on an offscreen canvas so we don't clip the whole scene
+  let shade = outdoorShadeCache[currentRoom];
+  if (!shade || shade.width !== mask.width || shade.height !== mask.height) {
+    shade = document.createElement("canvas");
+    shade.width = mask.width;
+    shade.height = mask.height;
+    outdoorShadeCache[currentRoom] = shade;
+  }
+  const sctx = shade.getContext("2d");
+  sctx.clearRect(0, 0, shade.width, shade.height);
+  sctx.fillStyle = tv.outdoorShadeColor || "rgba(0,0,0,1)";
+  sctx.fillRect(0, 0, shade.width, shade.height);
+  sctx.globalCompositeOperation = "destination-in";
+  sctx.drawImage(mask, 0, 0);
+  sctx.globalCompositeOperation = "source-over";
+
+  ctx.save();
+  ctx.globalAlpha = tv.outdoorShadeAlpha;
+  ctx.drawImage(shade, 0, 0);
+  ctx.restore();
 }
 
 function drawVignette() {
@@ -4083,8 +8077,12 @@ function drawVignette() {
 }
 
 function gameLoop() {
-  update();
+  const now = performance.now();
+  const dt = Math.min(now - lastFrameTime, 50); // cap at 50ms to avoid jumps
+  lastFrameTime = now;
+  update(dt);
   draw();
+  if (isRecording) updateRecTitle();
   requestAnimationFrame(gameLoop);
 }
 
@@ -4173,12 +8171,13 @@ if (isTouchDevice) {
     const tx = (touch.clientX - rect.left) * scaleX;
     const ty = (touch.clientY - rect.top) * scaleY;
     updateJoystickInput(tx, ty);
+    // Stand up if sitting
+    if (localSitting) standUp();
     // Reset idle timer
     lastKeyPressTime = Date.now();
     if (autoWalking) {
       autoWalking = false;
       autoWalkPath = [];
-      entranceWalking = false;
       postFocusTime = 0;
       document.getElementById("autowalk-hint").style.display = "none";
     }
@@ -4227,6 +8226,294 @@ if (isTouchDevice) {
     requestAnimationFrame(joystickLoop);
   }
   joystickLoop();
+}
+
+// ============================================================
+// SIT BUTTON (mobile + desktop)
+// ============================================================
+const sitBtn = document.getElementById("sit-btn");
+if (sitBtn) {
+  sitBtn.addEventListener("click", () => {
+    if (!localPlayer || isFocusing) return;
+    const camp = getNearestCampfire();
+    if (camp && camp.dist <= CAMPFIRE_INTERACT_DIST) {
+      socket.emit("toggleCampfire", { id: camp.id, x: localPlayer.x, y: localPlayer.y });
+      return;
+    }
+    if (localSitting) {
+      standUp();
+    } else {
+      const seat = getNearestSittable(localPlayer.x, localPlayer.y);
+      if (seat) {
+        localPlayer.x = seat.x;
+        localPlayer.y = seat.y;
+        if (seat.seatType !== 15) localPlayer.direction = seat.direction;
+        localPlayer.seatType = seat.seatType;
+        localSitting = true;
+        localPlayer.isSitting = true;
+        emitPlayerSit(true);
+        socket.emit("playerMove", { x: localPlayer.x, y: localPlayer.y, direction: localPlayer.direction });
+      }
+    }
+    updateSitButton();
+  });
+}
+
+function updateSitButton() {
+  if (!sitBtn || !localPlayer || !isTouchDevice) return;
+  if (localSitting) {
+    sitBtn.style.display = "none";
+  } else if (getNearestCampfire()?.dist <= CAMPFIRE_INTERACT_DIST) {
+    sitBtn.style.display = "block";
+    sitBtn.textContent = "INTERACT";
+  } else if (getNearestSittable(localPlayer.x, localPlayer.y)) {
+    sitBtn.style.display = "block";
+    sitBtn.textContent = "INTERACT";
+  } else {
+    sitBtn.style.display = "none";
+  }
+}
+
+// Update sit button visibility periodically
+setInterval(() => {
+  if (localPlayer) updateSitButton();
+}, 200);
+
+// ============================================================
+// TIMELAPSE RECORDING
+// Approach: store frames as ImageBitmap during recording,
+// then replay all frames at 30fps through MediaRecorder on stop.
+// This produces smooth, high-quality timelapse video.
+// ============================================================
+const recBtn = document.getElementById("rec-btn");
+const recTimer = document.getElementById("rec-timer");
+let isRecording = false;
+let recProcessing = false;
+let recStartTime = 0;
+let recFrames = [];       // JPEG Blob array (~100KB each, memory-safe for hours)
+let recCaptureTimer = null;
+let recSnapCanvas = null; // reusable snapshot canvas (1x logical resolution)
+let recSnapCtx = null;
+const REC_CAPTURE_MS = 2000;  // snapshot every 2 seconds
+const REC_REPLAY_FPS = 30;    // encode at 30fps → 60× speed
+const REC_BITRATE = 8_000_000; // 8 Mbps
+const REC_JPEG_QUALITY = 0.92;
+const REC_MAX_FRAMES = 5400;     // 3h @ 2s/frame; halved when exceeded
+let recWidth = 0;
+let recHeight = 0;
+
+function getRecMimeType() {
+  const types = [
+    { mime: "video/mp4;codecs=avc1.42E01E", ext: "mp4" },
+    { mime: "video/mp4", ext: "mp4" },
+    { mime: "video/webm;codecs=vp9", ext: "webm" },
+    { mime: "video/webm;codecs=vp8", ext: "webm" },
+    { mime: "video/webm", ext: "webm" },
+  ];
+  for (const t of types) {
+    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(t.mime)) return t;
+  }
+  return null;
+}
+
+// Feature detection (let for console testing: supportsRecording = false)
+let supportsRecording = typeof MediaRecorder !== 'undefined'
+  && typeof HTMLCanvasElement.prototype.captureStream === 'function'
+  && !!getRecMimeType();
+// supportsRecording checked in click handler to show user-friendly message
+
+function recEnsureSnapCanvas() {
+  const w = recWidth || Math.round(canvas.width / dpr);
+  const h = recHeight || Math.round(canvas.height / dpr);
+  if (!recSnapCanvas || recSnapCanvas.width !== w || recSnapCanvas.height !== h) {
+    recSnapCanvas = document.createElement("canvas");
+    recSnapCanvas.width = w;
+    recSnapCanvas.height = h;
+    recSnapCtx = recSnapCanvas.getContext("2d", { alpha: false });
+  }
+}
+
+function recCaptureFrame() {
+  recEnsureSnapCanvas();
+  recSnapCtx.clearRect(0, 0, recSnapCanvas.width, recSnapCanvas.height);
+  recSnapCtx.drawImage(canvas, 0, 0, recSnapCanvas.width, recSnapCanvas.height);
+  recSnapCanvas.toBlob(blob => {
+    if (blob) {
+      recFrames.push(blob);
+      if (recFrames.length >= REC_MAX_FRAMES) {
+        recFrames = recFrames.filter((_, i) => i % 2 === 0);
+      }
+    }
+  }, "image/jpeg", REC_JPEG_QUALITY);
+}
+
+function startRecording() {
+  if (!getRecMimeType()) { console.warn("[REC] No supported video MIME type"); return; }
+  recFrames = [];
+  recWidth = Math.round(canvas.width / dpr);
+  recHeight = Math.round(canvas.height / dpr);
+  recStartTime = performance.now();
+  isRecording = true;
+  recCaptureFrame();
+  recCaptureTimer = setInterval(recCaptureFrame, REC_CAPTURE_MS);
+  if (recBtn) recBtn.classList.add("recording");
+  if (recTimer) { recTimer.textContent = "00:00"; recTimer.classList.add("visible"); }
+}
+
+async function stopRecording() {
+  isRecording = false;
+  if (recCaptureTimer) { clearInterval(recCaptureTimer); recCaptureTimer = null; }
+
+  // Capture final frame as JPEG blob
+  try {
+    recEnsureSnapCanvas();
+    recSnapCtx.clearRect(0, 0, recSnapCanvas.width, recSnapCanvas.height);
+    recSnapCtx.drawImage(canvas, 0, 0, recSnapCanvas.width, recSnapCanvas.height);
+    const blob = await new Promise(r => recSnapCanvas.toBlob(r, "image/jpeg", REC_JPEG_QUALITY));
+    if (blob) recFrames.push(blob);
+  } catch {}
+
+  const frames = recFrames;
+  recFrames = [];
+
+  if (frames.length === 0) {
+    if (recBtn) { recBtn.classList.remove("recording"); recBtn.title = t("recStart"); }
+    if (recTimer) recTimer.classList.remove("visible");
+    recWidth = 0; recHeight = 0;
+    return;
+  }
+
+  recProcessing = true;
+  if (recBtn) recBtn.title = t("recEncoding").replace("{0}", "0");
+
+  const mimeInfo = getRecMimeType();
+  if (!mimeInfo) { recProcessing = false; recWidth = 0; recHeight = 0; return; }
+
+  try {
+    // Offscreen canvas at locked recording resolution
+    const offscreen = document.createElement("canvas");
+    offscreen.width = recWidth;
+    offscreen.height = recHeight;
+    const offCtx = offscreen.getContext("2d", { alpha: false });
+
+    // captureStream(0) = manual frame control via requestFrame()
+    const stream = offscreen.captureStream(0);
+    const vTrack = stream.getVideoTracks()[0];
+    if (!vTrack) throw new Error("No video track from captureStream");
+
+    const recorder = new MediaRecorder(stream, {
+      mimeType: mimeInfo.mime,
+      videoBitsPerSecond: REC_BITRATE,
+    });
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
+
+    // Stream decode: one frame at a time with one-frame lookahead (≈2 bitmaps in memory)
+    let currentBmp = await createImageBitmap(frames[0]);
+    let nextPromise = frames.length > 1 ? createImageBitmap(frames[1]) : null;
+
+    // Safety timeout: 5 min max for encoding
+    const encodingTimeout = setTimeout(() => {
+      console.warn("[REC] Encoding timeout — forcing stop");
+      try { recorder.stop(); } catch {}
+    }, 300000);
+
+    await new Promise((resolve) => {
+      recorder.onstop = () => {
+        clearTimeout(encodingTimeout);
+        const blob = new Blob(chunks, { type: mimeInfo.mime });
+        if (blob.size === 0) { console.warn("[REC] Empty blob"); resolve(); return; }
+
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        const filename = `beside-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.${mimeInfo.ext}`;
+
+        // iOS Safari: <a download> is ignored, use Web Share API instead
+        // Only on touch devices — desktop Chrome also supports canShare but <a download> works fine
+        const shareFile = isTouchDevice && new File([blob], filename, { type: mimeInfo.mime });
+        if (shareFile && navigator.canShare?.({ files: [shareFile] })) {
+          navigator.share({ files: [shareFile] }).catch(() => {});
+        } else {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        }
+        resolve();
+      };
+
+      recorder.start();
+
+      // Replay frames at 30fps with streaming decode + progress
+      let idx = 0;
+      async function replayFrame() {
+        try {
+          if (idx >= frames.length) {
+            setTimeout(() => { try { recorder.stop(); } catch {} }, 100);
+            return;
+          }
+          offCtx.fillStyle = "#2a2838";
+          offCtx.fillRect(0, 0, offscreen.width, offscreen.height);
+          if (currentBmp) {
+            offCtx.drawImage(currentBmp, 0, 0, offscreen.width, offscreen.height);
+            currentBmp.close();
+            currentBmp = null;
+          }
+          if (vTrack.requestFrame) vTrack.requestFrame();
+
+          const pct = Math.round(((idx + 1) / frames.length) * 100);
+          if (recBtn) recBtn.title = t("recEncoding").replace("{0}", pct);
+
+          idx++;
+          if (nextPromise) {
+            currentBmp = await nextPromise;
+            nextPromise = (idx + 1 < frames.length) ? createImageBitmap(frames[idx + 1]) : null;
+          }
+          setTimeout(replayFrame, Math.round(1000 / REC_REPLAY_FPS));
+        } catch (err) {
+          console.error("[REC] Replay error at frame", idx, err);
+          try { recorder.stop(); } catch {}
+        }
+      }
+      replayFrame();
+    });
+  } catch (err) {
+    console.error("[REC] Encoding failed:", err);
+  } finally {
+    recProcessing = false;
+    recWidth = 0; recHeight = 0;
+    if (recBtn) { recBtn.classList.remove("recording"); recBtn.title = t("recStart"); }
+    if (recTimer) recTimer.classList.remove("visible");
+    recSnapCanvas = null;
+    recSnapCtx = null;
+  }
+}
+
+function updateRecTitle() {
+  if (!recBtn || !isRecording) return;
+  const elapsed = Math.floor((performance.now() - recStartTime) / 1000);
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
+  const timeStr = `${mm}:${ss}`;
+  recBtn.title = `${t("recStop")} (${timeStr})`;
+  if (recTimer) recTimer.textContent = timeStr;
+}
+
+if (recBtn) {
+  recBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (recProcessing) return; // encoding in progress, ignore clicks
+    if (!supportsRecording) { alert(t("recUnsupported")); return; }
+    if (isRecording) {
+      stopRecording().catch(err => console.error("[REC] Stop failed:", err));
+    } else {
+      startRecording();
+    }
+  });
 }
 
 // Start

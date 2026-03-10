@@ -1,0 +1,14 @@
+{ "columns":8,
+ "image":"..\/assets\/modernexteriors-win\/Modern_Exteriors_32x32\/Animated_32x32\/Animated_Terrains_32x32\/Water_Tileset_32x32.png",
+ "imageheight":96,
+ "imagewidth":768,
+ "margin":0,
+ "name":"Water_Tileset_32x32",
+ "spacing":0,
+ "tilecount":8,
+ "tiledversion":"1.11.2",
+ "tileheight":96,
+ "tilewidth":96,
+ "type":"tileset",
+ "version":"1.10"
+}
