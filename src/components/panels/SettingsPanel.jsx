@@ -344,7 +344,7 @@ export default function SettingsPanel() {
           </div>
 
           <div className={styles.credits}>
-            Assets by <a href="https://limezu.itch.io" target="_blank" rel="noopener noreferrer">limezu</a> · <a href="https://pop-shop-packs.itch.io" target="_blank" rel="noopener noreferrer">Pop Shop Packs</a>
+            Assets by <a href="https://limezu.itch.io" target="_blank" rel="noopener noreferrer">limezu</a> · <a href="https://pop-shop-packs.itch.io" target="_blank" rel="noopener noreferrer">Pop Shop Packs</a> · <a href="https://pxlkit.xyz/" target="_blank" rel="noopener noreferrer">pxlkit</a>
           </div>
         </section>
       )}
