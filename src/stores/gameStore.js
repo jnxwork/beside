@@ -6,9 +6,11 @@ const useGameStore = create((set) => ({
   localPlayerId: null,
   catState: null,
   onlineCount: { total: 0, focus: 0, lounge: 0 },
+  playerHasMoved: false,
 
   // Actions
-  setRoom: (room) => set({ room }),
+  setRoom: (room) => set({ room, playerHasMoved: false }),
+  setPlayerHasMoved: () => set({ playerHasMoved: true }),
   setPlayers: (players) => set({ players }),
   updatePlayer: (id, data) =>
     set((s) => ({

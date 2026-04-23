@@ -21,6 +21,7 @@ function formatTimer(ms) {
 export default function ActionBar() {
   const t = useT();
   const room = useGameStore((s) => s.room);
+  const playerHasMoved = useGameStore((s) => s.playerHasMoved);
   const isFocusing = useFocusStore((s) => s.isFocusing);
   const elapsed = useFocusStore((s) => s.elapsed);
   const focusTaskName = useFocusStore((s) => s.focusTaskName);
@@ -43,6 +44,8 @@ export default function ActionBar() {
       setFocusPopupOpen(true);
     }
   };
+
+  if (!playerHasMoved && !isFocusing) return null;
 
   return (
     <nav className={styles.bar} aria-label="Actions">

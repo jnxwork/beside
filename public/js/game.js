@@ -5132,7 +5132,7 @@ function showMoveHint() {
   el.style.display = "block";
   // Fade in after a short delay
   setTimeout(() => { el.style.opacity = "1"; }, 500);
-  window.__hints?.showMove?.();
+  window.__hints?.showMoveHint?.();
 }
 function hideMoveHint() {
   const el = document.getElementById("move-hint");
@@ -5140,7 +5140,7 @@ function hideMoveHint() {
   el.style.opacity = "0";
   setTimeout(() => { el.style.display = "none"; }, 500);
   if (moveHintTimer) { clearTimeout(moveHintTimer); moveHintTimer = null; }
-  window.__hints?.hideMove?.();
+  window.__hints?.hideMoveHint?.();
 }
 
 let focusPortalPending = false;
@@ -5160,7 +5160,7 @@ document.addEventListener("keydown", (e) => {
   lastKeyPressTime = Date.now();
   // Hide move hint only on actual movement keys
   const hintKeys = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","w","W","a","A","s","S","d","D"];
-  if (hintKeys.includes(e.key)) hideMoveHint();
+  if (hintKeys.includes(e.key)) { hideMoveHint(); storeSet("game", "setPlayerHasMoved"); }
   if (autoWalking) {
     autoWalking = false;
     autoWalkPath = [];
@@ -8197,6 +8197,7 @@ if (isTouchDevice) {
     const touch = e.changedTouches[0];
     joyTouchId = touch.identifier;
     joyActive = true;
+    storeSet("game", "setPlayerHasMoved");
     const rect = joystickCanvas.getBoundingClientRect();
     const scaleX = JOY_SIZE / rect.width;
     const scaleY = JOY_SIZE / rect.height;
