@@ -94,13 +94,69 @@ db.exec(`
   );
 `);
 
-// Migrations — safely add columns to existing databases
+// Migrations — detect legacy schema and rebuild if needed
+const userCols = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
+if (!userCols.includes("email")) {
+  db.exec("DROP TABLE IF EXISTS auth_tokens");
+  db.exec("DROP TABLE IF EXISTS focus_records");
+  db.exec("DROP TABLE IF EXISTS weekly_stats");
+  db.exec("DROP TABLE IF EXISTS weekly_copresence");
+  db.exec("DROP TABLE IF EXISTS users");
+  db.exec(`
+    CREATE TABLE users (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      email      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      password   TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      name       TEXT NOT NULL DEFAULT 'Anonymous',
+      character  TEXT NOT NULL DEFAULT '{"preset":1}',
+      tagline    TEXT NOT NULL DEFAULT '',
+      languages  TEXT NOT NULL DEFAULT '["en"]',
+      points     INTEGER NOT NULL DEFAULT 0,
+      cosmetics  TEXT NOT NULL DEFAULT '[]',
+      birth_month INTEGER DEFAULT NULL,
+      profession  TEXT NOT NULL DEFAULT 'mystery',
+      is_guest   INTEGER NOT NULL DEFAULT 0,
+      last_seen  INTEGER
+    );
+    CREATE TABLE auth_tokens (
+      token      TEXT PRIMARY KEY,
+      user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE focus_records (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      task_name  TEXT NOT NULL DEFAULT '',
+      category   TEXT NOT NULL DEFAULT 'study',
+      duration   INTEGER NOT NULL,
+      start_time INTEGER NOT NULL,
+      end_time   INTEGER NOT NULL
+    );
+    CREATE TABLE weekly_stats (
+      user_id              INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      week_start           TEXT NOT NULL,
+      online_secs          INTEGER NOT NULL DEFAULT 0,
+      reactions_received   INTEGER NOT NULL DEFAULT 0,
+      cat_gifts_received   INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, week_start)
+    );
+    CREATE TABLE weekly_copresence (
+      user_a      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      user_b      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      week_start  TEXT NOT NULL,
+      shared_secs INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_a, user_b, week_start),
+      CHECK (user_a < user_b)
+    );
+  `);
+}
+// Safely add columns to existing databases
 try { db.exec("ALTER TABLE users ADD COLUMN birth_month INTEGER DEFAULT NULL"); } catch {}
 try { db.exec("ALTER TABLE users ADD COLUMN profession TEXT NOT NULL DEFAULT 'mystery'"); } catch {}
 try { db.exec("ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE users ADD COLUMN last_seen INTEGER"); } catch {}
-try { db.exec("ALTER TABLE users ADD COLUMN birth_month INTEGER DEFAULT NULL"); } catch {}
-try { db.exec("ALTER TABLE users ADD COLUMN profession TEXT NOT NULL DEFAULT 'mystery'"); } catch {}
 try { db.exec("ALTER TABLE bulletin_notes ADD COLUMN author_profession TEXT NOT NULL DEFAULT 'mystery'"); } catch {}
 
 const VALID_PROFESSIONS = ["tech", "creative", "business", "student", "educator", "freelance", "mystery"];
