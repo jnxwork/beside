@@ -2570,6 +2570,15 @@ app.get('/api/config', (req, res) => {
   });
 });
 
+app.get('/api/status', (req, res) => {
+  const all = Object.values(players);
+  res.json({
+    online: all.length,
+    focus: all.filter(p => p.room === 'focus').length,
+    lounge: all.filter(p => p.room === 'rest').length,
+  });
+});
+
 // Vite middleware (dev) or static files (production)
 const isDev = !fs.existsSync(distPath);
 

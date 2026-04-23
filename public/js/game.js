@@ -6973,6 +6973,10 @@ socket.on("currentPlayers", (players) => {
       if (localPlayer.timezoneHour == null) localPlayer.timezoneHour = new Date().getHours();
       currentRoom = localPlayer.room;
       updateRoomUI();
+      // Re-sync focus state if locally focusing (e.g. after server restart)
+      if (isFocusing && focusStartTime) {
+        socket.emit("startFocus", { category: focusCategory || "study" });
+      }
     } else {
       otherPlayers[id] = players[id];
     }
