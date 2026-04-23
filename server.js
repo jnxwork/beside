@@ -99,6 +99,8 @@ try { db.exec("ALTER TABLE users ADD COLUMN birth_month INTEGER DEFAULT NULL"); 
 try { db.exec("ALTER TABLE users ADD COLUMN profession TEXT NOT NULL DEFAULT 'mystery'"); } catch {}
 try { db.exec("ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE users ADD COLUMN last_seen INTEGER"); } catch {}
+try { db.exec("ALTER TABLE users ADD COLUMN birth_month INTEGER DEFAULT NULL"); } catch {}
+try { db.exec("ALTER TABLE users ADD COLUMN profession TEXT NOT NULL DEFAULT 'mystery'"); } catch {}
 try { db.exec("ALTER TABLE bulletin_notes ADD COLUMN author_profession TEXT NOT NULL DEFAULT 'mystery'"); } catch {}
 
 const VALID_PROFESSIONS = ["tech", "creative", "business", "student", "educator", "freelance", "mystery"];
