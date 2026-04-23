@@ -1,0 +1,27 @@
+.preview {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: var(--size-px-3) 0;
+  background: var(--retro-bg);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--size-px-3);
+}
+
+.canvas {
+  max-width: 100%;
+  height: auto;
+  border: var(--border-md) solid var(--retro-divider);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--retro-shadow-lg);
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
+.actions {
+  display: flex;
+  gap: var(--size-px-2);
+  justify-content: center;
+  flex-wrap: wrap;
+}

@@ -1,0 +1,105 @@
+.panel {
+  position: absolute;
+  top: var(--size-px-2);
+  left: var(--size-px-2);
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: var(--ui-icon-frame-size);
+  padding: 0 var(--size-px-2);
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  border: var(--border-md) solid var(--retro-secondary);
+  border-radius: var(--radius-md);
+  z-index: var(--z-panel);
+  font-size: var(--fs-md);
+  cursor: default;
+  transition: background var(--duration-slow) ease, border-color var(--duration-normal);
+}
+.panel:hover {
+  border-color: var(--retro-primary);
+}
+
+.total {
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+  color: var(--retro-text);
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.statusIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.statusEmoji {
+  font-size: var(--ui-icon-inner-size);
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ui-icon-inner-size);
+  height: var(--ui-icon-inner-size);
+}
+
+.count {
+  font-size: var(--fs-md);
+  color: var(--retro-primary);
+  min-width: var(--fs-sm);
+  text-align: left;
+}
+
+.detail {
+  display: flex;
+  gap: var(--size-px-2);
+  overflow: hidden;
+  max-width: 0;
+  opacity: 0;
+  transition: max-width var(--duration-slow) ease, opacity var(--duration-slow) ease, margin var(--duration-slow) ease;
+  white-space: nowrap;
+  margin-left: 0;
+}
+
+.panel:hover .detail {
+  max-width: 320px;
+  opacity: 1;
+  margin-left: var(--size-px-2);
+}
+
+.sep { color: var(--retro-divider); font-size: var(--fs-md); }
+.dot { color: var(--retro-divider); font-size: var(--fs-sm); }
+
+.detailItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-px-1);
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+.focus { color: var(--retro-cyan); }
+.lounge { color: var(--retro-purple); }
+
+.detailEmoji {
+  font-size: var(--ui-icon-inner-size);
+  line-height: 1;
+  width: var(--ui-icon-inner-size);
+  height: var(--ui-icon-inner-size);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.detailText, .detailCount {
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+.greenDot {
+  color: #22c55e;
+  font-size: var(--ui-icon-inner-size);
+}

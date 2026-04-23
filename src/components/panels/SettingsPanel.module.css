@@ -1,0 +1,277 @@
+.panel {
+  position: absolute;
+  top: var(--size-px-2);
+  right: var(--size-px-2);
+  z-index: var(--z-settings);
+}
+
+.launchers {
+  display: flex;
+  gap: var(--size-px-2);
+  justify-content: flex-end;
+}
+
+/* Tooltip: right-align + 400ms delay before showing */
+.launchers :global([role="tooltip"]) {
+  left: auto;
+  right: 0;
+  transform: none;
+  white-space: nowrap;
+  animation: tooltip-in 0.15s ease 400ms both;
+  font-size: var(--fs-xs) !important;
+  background: #1e2636 !important;
+}
+
+@keyframes tooltip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.iconBtn {
+  width: var(--ui-icon-frame-size);
+  height: var(--ui-icon-frame-size);
+  padding: 0;
+  border: var(--border-md) solid var(--retro-secondary);
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  border-radius: var(--radius-md);
+  color: var(--retro-text);
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color var(--duration-normal), background var(--duration-normal);
+}
+.iconBtn:hover { border-color: var(--retro-primary); }
+.iconBtnActive { background: var(--retro-bg); border-color: var(--retro-primary); }
+.iconBtnRecording { border-color: var(--retro-recording); }
+
+.recTimer {
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+  min-width: 68px;
+  font-size: var(--fs-sm);
+  color: var(--retro-muted);
+  padding: var(--size-px-1) var(--size-px-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.recDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--retro-recording);
+  flex-shrink: 0;
+}
+
+.iconInner {
+  font-size: var(--ui-icon-inner-size);
+  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profileIcon {
+  width: var(--ui-icon-inner-size);
+  height: var(--ui-icon-inner-size);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profileMenu,
+.captureMenu {
+  position: absolute;
+  top: calc(100% + var(--size-px-2));
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  width: 180px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  border: var(--border-thin) solid var(--panel-border);
+  border-radius: var(--radius-md);
+  padding: var(--size-px-1);
+  box-shadow: var(--pxl-bevel);
+  z-index: calc(var(--z-settings) + 1);
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+  padding: var(--size-px-2);
+  font-size: var(--fs-sm);
+  color: var(--retro-text);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast);
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.menuItem:hover {
+  background: var(--retro-primary-10);
+  color: var(--retro-primary);
+}
+
+.menuItem svg,
+.menuItem i {
+  font-size: var(--icon-md);
+  flex-shrink: 0;
+}
+
+.detail {
+  position: absolute;
+  top: calc(100% + var(--size-px-2));
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-px-2-5);
+  width: min(340px, calc(100vw - var(--size-px-3)));
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  border: var(--border-thin) solid var(--panel-border);
+  border-radius: var(--radius-md);
+  padding: var(--size-px-2-5) var(--size-px-3);
+  box-shadow: var(--pxl-bevel);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-px-2-5);
+}
+
+.sectionTitle {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--retro-primary);
+  margin: 0 0 var(--size-px-1) 0;
+  padding-bottom: var(--size-px-1);
+  border-bottom: var(--border-thin) solid var(--retro-divider);
+}
+
+/* Unified setting row: label left, value right, consistent height */
+.settingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-px-2);
+  min-height: var(--size-px-7);
+}
+
+.settingLabel {
+  font-size: var(--fs-sm);
+  color: var(--retro-muted);
+  white-space: nowrap;
+  min-width: 64px;
+  flex-shrink: 0;
+}
+
+.settingValue {
+  flex: 1;
+  min-width: 0;
+}
+
+.soundControl {
+  display: flex;
+  gap: var(--size-px-3);
+  align-items: center;
+}
+/* Override PixelCheckbox internal gap → 8px */
+.soundControl [role="checkbox"] {
+  gap: var(--size-px-2) !important;
+}
+
+/* PixelSlider: strip label/value header, show only track */
+.soundControl > :last-child {
+  width: 100px;
+}
+.soundControl > :last-child > :first-child {
+  display: none;
+}
+.soundControl > :last-child > :not(:first-child) {
+  margin-top: 0 !important;
+}
+
+/* Muted state: gray out slider thumb */
+.soundMuted > :last-child {
+  pointer-events: none;
+}
+.soundMuted > :last-child [role="slider"] > :last-child {
+  border-color: #666 !important;
+  background-color: #666 !important;
+}
+
+.namesToggles {
+  display: flex;
+  gap: var(--size-px-3);
+  flex-wrap: wrap;
+}
+/* Override PixelCheckbox internal gap (10px) → 8px */
+.namesToggles [role="checkbox"] {
+  gap: var(--size-px-2) !important;
+}
+
+/* PixelSelect: wide enough to show full option text */
+.settingRow [role="combobox"] {
+  min-width: 120px;
+}
+
+/* Standalone checkbox: push to right edge, hide empty label gap */
+.settingRow > [role="checkbox"] {
+  margin-left: auto;
+  gap: 0 !important;
+}
+.settingRow > [role="checkbox"] > :last-child:empty {
+  display: none;
+}
+
+.authSection {
+  padding-bottom: var(--size-px-2);
+  border-bottom: var(--border-thin) solid var(--retro-divider);
+}
+
+.authRow {
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+  flex-wrap: wrap;
+  padding: var(--size-px-0-5) 0;
+}
+
+.authEmail {
+  font-size: var(--fs-sm);
+  color: var(--retro-muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.credits {
+  font-size: var(--fs-xs);
+  color: var(--retro-muted);
+  text-align: center;
+  padding-top: var(--size-px-2);
+  border-top: var(--border-thin) solid var(--retro-divider);
+  opacity: 0.7;
+}
+.credits a {
+  color: var(--retro-muted);
+  text-decoration: underline;
+}
+.credits a:hover {
+  color: var(--retro-text);
+}

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bulletin Board - Phaser PixUI / Fantasy RPG Style</title>
+<link href="https://fonts.googleapis.com/css2?family=MedievalSharp&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --parchment: #fbe4af;
+    --parchment-dark: #d4b87c;
+    --parchment-deeper: #c4a060;
+    --navy: #111343;
+    --navy-light: #1e2060;
+    --navy-lighter: #2a2a6a;
+    --frame-outer: #5a4030;
+    --frame-inner: #8b6840;
+    --frame-gold: #d4a040;
+    --frame-gold-light: #e8c868;
+    --teal: #7bb6bc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #0a0a20;
+    font-family: 'MedievalSharp', serif;
+    font-size: 14px;
+    color: var(--parchment);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  /* Fantasy RPG frame: layered borders simulating ornate nine-slice */
+  .panel {
+    width: 500px;
+    max-width: 95vw;
+    max-height: 90vh;
+    background: var(--navy);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 4px solid var(--frame-gold);
+    outline: 4px solid var(--frame-outer);
+    outline-offset: 0px;
+    box-shadow:
+      inset 0 0 0 2px var(--frame-gold-light),
+      inset 0 0 0 4px var(--navy-light),
+      0 0 0 8px var(--frame-outer),
+      0 0 20px rgba(0,0,0,0.5);
+    /* Decorative corner dots */
+    background-image:
+      radial-gradient(circle at 8px 8px, var(--frame-gold) 3px, transparent 3px),
+      radial-gradient(circle at calc(100% - 8px) 8px, var(--frame-gold) 3px, transparent 3px),
+      radial-gradient(circle at 8px calc(100% - 8px), var(--frame-gold) 3px, transparent 3px),
+      radial-gradient(circle at calc(100% - 8px) calc(100% - 8px), var(--frame-gold) 3px, transparent 3px);
+    background-repeat: no-repeat;
+    background-color: var(--navy);
+  }
+  /* Title banner */
+  .panel-title {
+    text-align: center;
+    font-size: 20px;
+    margin-bottom: 14px;
+    color: var(--parchment);
+    text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    letter-spacing: 2px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--frame-gold);
+    background: linear-gradient(180deg, transparent 0%, rgba(212,160,64,0.08) 100%);
+  }
+  .section-label {
+    color: var(--frame-gold-light);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 8px;
+  }
+  .scroll-area {
+    flex: 1; overflow-y: auto; min-height: 0;
+    margin-bottom: 12px; max-height: 50vh;
+    scrollbar-width: thin;
+    scrollbar-color: var(--frame-gold) var(--navy-light);
+  }
+  .scroll-area::-webkit-scrollbar { width: 8px; }
+  .scroll-area::-webkit-scrollbar-thumb { background: var(--frame-gold); border-radius: 0; }
+  .scroll-area::-webkit-scrollbar-track { background: var(--navy-light); }
+  /* Announcements */
+  .ann-item {
+    background: rgba(251,228,175,0.06);
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border: 1px solid var(--frame-gold);
+    border-left: 4px solid var(--frame-gold);
+  }
+  .ann-text { color: var(--parchment); font-size: 13px; word-break: break-word; }
+  .ann-meta { color: var(--teal); font-size: 11px; margin-top: 4px; }
+  .divider {
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--frame-gold), transparent);
+    margin: 12px 0;
+  }
+  /* Notes - parchment paper cards */
+  .notes-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .note-card {
+    padding: 12px;
+    font-size: 13px;
+    word-break: break-word;
+    border: 2px solid;
+    position: relative;
+  }
+  .note-card.color-yellow {
+    background: linear-gradient(135deg, #f5e6a8, #e8d490);
+    border-color: #c4a050;
+    color: #3a2810;
+  }
+  .note-card.color-pink {
+    background: linear-gradient(135deg, #f0c4c4, #e0a8a8);
+    border-color: #b87070;
+    color: #3a1818;
+  }
+  .note-card.color-blue {
+    background: linear-gradient(135deg, #c4d8f0, #a8c0e0);
+    border-color: #7090b8;
+    color: #182038;
+  }
+  .note-card.color-green {
+    background: linear-gradient(135deg, #c8e4c4, #a8d0a0);
+    border-color: #70a868;
+    color: #183818;
+  }
+  .note-card.color-purple {
+    background: linear-gradient(135deg, #d8c8e4, #c0a8d0);
+    border-color: #9070a8;
+    color: #281838;
+  }
+  .note-text { margin-bottom: 6px; }
+  .note-meta { font-size: 11px; opacity: 0.6; }
+  .note-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+  .note-like { font-size: 11px; opacity: 0.5; cursor: pointer; }
+  .note-like.liked { color: #c03040; opacity: 1; }
+  .note-delete { font-size: 11px; opacity: 0.4; cursor: pointer; }
+  /* Input - parchment scroll feel */
+  .input-area { margin-bottom: 10px; }
+  .input-area textarea {
+    width: 100%;
+    background: var(--parchment);
+    color: var(--navy);
+    border: 2px solid var(--frame-gold);
+    padding: 10px;
+    font-family: 'MedievalSharp', serif;
+    font-size: 13px;
+    resize: none;
+    outline: none;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+  }
+  .input-area textarea:focus { border-color: var(--frame-gold-light); }
+  .input-area textarea::placeholder { color: var(--parchment-deeper); }
+  .counter { text-align: right; font-size: 11px; color: var(--teal); margin-top: 2px; }
+  /* Buttons - fantasy RPG */
+  .actions { display: flex; gap: 10px; }
+  .btn {
+    flex: 1;
+    padding: 10px 0;
+    font-family: 'MedievalSharp', serif;
+    font-size: 14px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    cursor: pointer;
+    border: 2px solid;
+    transition: all 0.15s;
+  }
+  .btn-close {
+    background: var(--navy-light);
+    border-color: var(--frame-gold);
+    color: var(--parchment);
+    box-shadow:
+      inset 1px 1px 0 rgba(255,255,255,0.08),
+      inset -1px -1px 0 rgba(0,0,0,0.3);
+  }
+  .btn-close:hover { background: var(--navy-lighter); }
+  .btn-close:active {
+    box-shadow: inset -1px -1px 0 rgba(255,255,255,0.08), inset 1px 1px 0 rgba(0,0,0,0.3);
+  }
+  .btn-primary {
+    background: linear-gradient(180deg, var(--frame-gold-light), var(--frame-gold));
+    border-color: var(--frame-outer);
+    color: var(--navy);
+    box-shadow:
+      inset 1px 1px 0 rgba(255,255,255,0.3),
+      inset -1px -1px 0 rgba(0,0,0,0.15),
+      0 2px 4px rgba(0,0,0,0.3);
+  }
+  .btn-primary:hover {
+    background: linear-gradient(180deg, #f0d878, var(--frame-gold-light));
+  }
+  .btn-primary:active {
+    box-shadow: inset -1px -1px 0 rgba(255,255,255,0.3), inset 1px 1px 0 rgba(0,0,0,0.15);
+  }
+  .empty-msg { text-align: center; color: var(--teal); font-size: 12px; padding: 20px 0; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="overlay">
+  <div class="panel">
+    <div class="panel-title">Bulletin Board</div>
+    <div class="scroll-area">
+      <div class="section-label">Announcements</div>
+      <div class="ann-item">
+        <div class="ann-text">Welcome to the cozy space! Feel free to leave a note.</div>
+        <div class="ann-meta">Admin - 2 hours ago</div>
+      </div>
+      <div class="divider"></div>
+      <div class="section-label">Notes</div>
+      <div class="notes-grid">
+        <div class="note-card color-yellow">
+          <div class="note-text">Having a great study session today!</div>
+          <div class="note-footer">
+            <span class="note-meta">Alice</span>
+            <span class="note-like liked">&#10084; 3</span>
+          </div>
+        </div>
+        <div class="note-card color-pink">
+          <div class="note-text">The cat is so cute~</div>
+          <div class="note-footer">
+            <span class="note-meta">Bob</span>
+            <span class="note-like">&#9825; 1</span>
+          </div>
+        </div>
+        <div class="note-card color-blue">
+          <div class="note-text">Focus mode activated!</div>
+          <div class="note-footer">
+            <span class="note-meta">Charlie</span>
+            <span class="note-like">&#9825; 0</span>
+          </div>
+        </div>
+        <div class="note-card color-green">
+          <div class="note-text">Good vibes only :)</div>
+          <div class="note-footer">
+            <span class="note-meta">Dana</span>
+            <span class="note-like liked">&#10084; 5</span>
+          </div>
+        </div>
+        <div class="note-card color-purple">
+          <div class="note-text">Anyone want to study together?</div>
+          <div class="note-footer">
+            <span class="note-meta">Eve</span>
+            <span class="note-like">&#9825; 2</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="input-area">
+      <textarea rows="2" placeholder="Leave a note on the board..."></textarea>
+      <div class="counter">0/100</div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-close">Close</button>
+      <button class="btn btn-primary">Post</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Beside</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#242e3c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/tokens.css">
+  <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg">
+  <style>
+    /* Prevent white flash before theme.css loads */
+    body { background: #242e3c; }
+
+    /* Reaction notifications (used by game.js, not in React/theme.css) */
+    #reaction-notifications {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      z-index: 18;
+      max-height: 180px;
+      overflow-y: auto;
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      pointer-events: auto;
+    }
+    #reaction-notifications::-webkit-scrollbar { width: 4px; }
+    #reaction-notifications::-webkit-scrollbar-thumb { background: var(--retro-border); border-radius: 0; }
+    .reaction-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      margin-bottom: 4px;
+      background: var(--retro-bg);
+      border: 1px solid var(--retro-divider);
+      border-radius: 0;
+      white-space: nowrap;
+    }
+    .reaction-time { color: #666; font-size: 12px; flex-shrink: 0; }
+    .reaction-content { color: var(--retro-text); font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .reaction-content .reaction-name { color: var(--retro-primary); font-weight: bold; }
+    .reaction-close { background: none; border: none; color: #666; cursor: pointer; font-size: 14px; padding: 0 4px; flex-shrink: 0; line-height: 1; }
+    .reaction-close:hover { color: var(--retro-primary); }
+  </style>
+  <link rel="stylesheet" crossorigin="anonymous" href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" />
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="game"></canvas>
+    <!-- Joystick (mobile) — game.js expects this in DOM -->
+    <div id="joystick-zone" style="display:none;position:absolute;right:8px;bottom:8px;width:128px;height:128px;z-index:15;touch-action:none;">
+      <canvas id="joystick-canvas" width="130" height="130"></canvas>
+    </div>
+    <!-- Reaction notifications (used by game.js) -->
+    <div id="reaction-notifications">
+      <div id="reaction-list"></div>
+    </div>
+    <!-- React UI root -->
+    <div id="ui-root"></div>
+  </div>
+  <!-- Socket.IO client (required by game.js) -->
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- React + Vite entry -->
+  <script type="module" src="/src/main.jsx"></script>
+  <!-- Original Canvas game engine (will be migrated to src/engine/game.js later) -->
+  <script src="/js/game.js?v=2"></script>
+</body>
+</html>

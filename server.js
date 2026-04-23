@@ -12,7 +12,14 @@ const server = http.createServer(app);
 const io = new Server(server, { pingTimeout: 45000 });
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+
+const distPath = path.join(__dirname, "dist");
+
+// ============================================================
+// ENVIRONMENT CONFIG (staging vs production)
+// ============================================================
+const APP_ENV = process.env.NODE_ENV || "staging";
+const IS_PROD = APP_ENV === "production";
 
 // ============================================================
 // DATABASE
@@ -26,7 +33,7 @@ db.pragma("foreign_keys = ON");
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    username   TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    email      TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password   TEXT NOT NULL,
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     name       TEXT NOT NULL DEFAULT 'Anonymous',
@@ -34,7 +41,9 @@ db.exec(`
     tagline    TEXT NOT NULL DEFAULT '',
     languages  TEXT NOT NULL DEFAULT '["en"]',
     points     INTEGER NOT NULL DEFAULT 0,
-    cosmetics  TEXT NOT NULL DEFAULT '[]'
+    cosmetics  TEXT NOT NULL DEFAULT '[]',
+    birth_month INTEGER DEFAULT NULL,
+    profession  TEXT NOT NULL DEFAULT 'mystery'
   );
   CREATE TABLE IF NOT EXISTS auth_tokens (
     token      TEXT PRIMARY KEY,
@@ -42,13 +51,63 @@ db.exec(`
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     expires_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS focus_records (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    task_name  TEXT NOT NULL DEFAULT '',
+    category   TEXT NOT NULL DEFAULT 'study',
+    duration   INTEGER NOT NULL,
+    start_time INTEGER NOT NULL,
+    end_time   INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS weekly_stats (
+    user_id              INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    week_start           TEXT NOT NULL,
+    online_secs          INTEGER NOT NULL DEFAULT 0,
+    reactions_received   INTEGER NOT NULL DEFAULT 0,
+    cat_gifts_received   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, week_start)
+  );
+  CREATE TABLE IF NOT EXISTS weekly_copresence (
+    user_a      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_b      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    week_start  TEXT NOT NULL,
+    shared_secs INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_a, user_b, week_start),
+    CHECK (user_a < user_b)
+  );
+  CREATE TABLE IF NOT EXISTS bulletin_notes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    room            TEXT NOT NULL,
+    author_name     TEXT NOT NULL,
+    author_id       INTEGER,
+    text            TEXT NOT NULL,
+    color           TEXT,
+    is_announcement INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL,
+    expires_at      INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS bulletin_likes (
+    note_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (note_id, user_id)
+  );
 `);
+
+// Migrations — safely add columns to existing databases
+try { db.exec("ALTER TABLE users ADD COLUMN birth_month INTEGER DEFAULT NULL"); } catch {}
+try { db.exec("ALTER TABLE users ADD COLUMN profession TEXT NOT NULL DEFAULT 'mystery'"); } catch {}
+try { db.exec("ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE users ADD COLUMN last_seen INTEGER"); } catch {}
+try { db.exec("ALTER TABLE bulletin_notes ADD COLUMN author_profession TEXT NOT NULL DEFAULT 'mystery'"); } catch {}
+
+const VALID_PROFESSIONS = ["tech", "creative", "business", "student", "educator", "freelance", "mystery"];
 
 // Prepared statements
 const stmtInsertUser = db.prepare(
-  "INSERT INTO users (username, password, name, character, tagline, languages) VALUES (?, ?, ?, ?, ?, ?)"
+  "INSERT INTO users (email, password, name, character, tagline, languages, birth_month, profession) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 );
-const stmtGetUserByUsername = db.prepare("SELECT * FROM users WHERE username = ?");
+const stmtGetUserByEmail = db.prepare("SELECT * FROM users WHERE email = ?");
 const stmtGetUserById = db.prepare("SELECT * FROM users WHERE id = ?");
 const stmtInsertToken = db.prepare(
   "INSERT INTO auth_tokens (token, user_id, expires_at) VALUES (?, ?, ?)"
@@ -59,7 +118,88 @@ const stmtGetToken = db.prepare(
 const stmtDeleteToken = db.prepare("DELETE FROM auth_tokens WHERE token = ?");
 const stmtDeleteExpiredTokens = db.prepare("DELETE FROM auth_tokens WHERE expires_at <= unixepoch()");
 const stmtUpdateProfile = db.prepare(
-  "UPDATE users SET name = ?, character = ?, tagline = ?, languages = ? WHERE id = ?"
+  "UPDATE users SET name = ?, character = ?, tagline = ?, languages = ?, birth_month = ?, profession = ? WHERE id = ?"
+);
+const stmtInsertFocusRecord = db.prepare(
+  "INSERT INTO focus_records (user_id, task_name, category, duration, start_time, end_time) VALUES (?, ?, ?, ?, ?, ?)"
+);
+const stmtGetFocusRecords = db.prepare(
+  "SELECT task_name, category, duration, start_time, end_time FROM focus_records WHERE user_id = ? ORDER BY end_time DESC LIMIT 100"
+);
+
+// Guest user management
+const stmtInsertGuestUser = db.prepare(
+  "INSERT INTO users (email, password, name, is_guest) VALUES (?, '!guest', 'Anonymous', 1)"
+);
+const stmtUpgradeGuest = db.prepare(
+  "UPDATE users SET email=?, password=?, is_guest=0, name=?, character=?, tagline=?, languages=?, birth_month=?, profession=? WHERE id=? AND is_guest=1"
+);
+const stmtUpdateLastSeen = db.prepare("UPDATE users SET last_seen = unixepoch() WHERE id = ?");
+const stmtCleanupGuests = db.prepare(
+  "DELETE FROM users WHERE is_guest = 1 AND last_seen IS NOT NULL AND last_seen < unixepoch() - 30 * 86400"
+);
+
+// Bulletin board prepared statements
+const stmtInsertNote = db.prepare(
+  "INSERT INTO bulletin_notes (room, author_name, author_id, text, color, is_announcement, created_at, expires_at, author_profession) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+);
+const stmtGetAnnouncements = db.prepare(
+  "SELECT id, room, author_name, text, color, is_announcement, created_at, expires_at FROM bulletin_notes WHERE is_announcement = 1 AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC"
+);
+const stmtGetPlayerNotes = db.prepare(
+  "SELECT id, room, author_name, author_id, text, color, is_announcement, created_at, author_profession FROM bulletin_notes WHERE is_announcement = 0 AND created_at > ? ORDER BY created_at DESC LIMIT 20"
+);
+const stmtDeleteNoteById = db.prepare(
+  "DELETE FROM bulletin_notes WHERE id = ? AND author_id = ? AND is_announcement = 0"
+);
+const stmtCountPlayerNotes = db.prepare(
+  "SELECT COUNT(*) AS cnt FROM bulletin_notes WHERE is_announcement = 0 AND created_at > ?"
+);
+const stmtDeleteOldestNote = db.prepare(
+  "DELETE FROM bulletin_notes WHERE id = (SELECT id FROM bulletin_notes WHERE is_announcement = 0 ORDER BY created_at ASC LIMIT 1)"
+);
+const stmtCleanExpiredNotes = db.prepare(
+  "DELETE FROM bulletin_notes WHERE (is_announcement = 0 AND created_at < ?) OR (is_announcement = 1 AND expires_at IS NOT NULL AND expires_at < ?)"
+);
+
+// Bulletin likes prepared statements
+const stmtLikeInsert = db.prepare("INSERT OR IGNORE INTO bulletin_likes (note_id, user_id) VALUES (?, ?)");
+const stmtLikeDelete = db.prepare("DELETE FROM bulletin_likes WHERE note_id = ? AND user_id = ?");
+const stmtLikeCheck = db.prepare("SELECT 1 FROM bulletin_likes WHERE note_id = ? AND user_id = ?");
+const stmtLikeCount = db.prepare("SELECT COUNT(*) AS cnt FROM bulletin_likes WHERE note_id = ?");
+const stmtNoteAuthor = db.prepare("SELECT author_id FROM bulletin_notes WHERE id = ?");
+const stmtUserLikes = db.prepare("SELECT note_id FROM bulletin_likes WHERE user_id = ?");
+const stmtDeleteNoteLikes = db.prepare("DELETE FROM bulletin_likes WHERE note_id = ?");
+
+// Weekly stats prepared statements
+const stmtUpsertOnlineSecs = db.prepare(
+  `INSERT INTO weekly_stats (user_id, week_start, online_secs)
+   VALUES (?, ?, 60)
+   ON CONFLICT(user_id, week_start) DO UPDATE SET online_secs = online_secs + 60`
+);
+const stmtIncrReactionsReceived = db.prepare(
+  `INSERT INTO weekly_stats (user_id, week_start, reactions_received)
+   VALUES (?, ?, 1)
+   ON CONFLICT(user_id, week_start) DO UPDATE SET reactions_received = reactions_received + 1`
+);
+const stmtIncrCatGiftsReceived = db.prepare(
+  `INSERT INTO weekly_stats (user_id, week_start, cat_gifts_received)
+   VALUES (?, ?, 1)
+   ON CONFLICT(user_id, week_start) DO UPDATE SET cat_gifts_received = cat_gifts_received + 1`
+);
+const stmtUpsertCopresence = db.prepare(
+  `INSERT INTO weekly_copresence (user_a, user_b, week_start, shared_secs)
+   VALUES (?, ?, ?, 60)
+   ON CONFLICT(user_a, user_b, week_start) DO UPDATE SET shared_secs = shared_secs + 60`
+);
+const stmtGetWeeklyStats = db.prepare(
+  "SELECT online_secs, reactions_received, cat_gifts_received FROM weekly_stats WHERE user_id = ? AND week_start = ?"
+);
+const stmtGetTopCopresence = db.prepare(
+  `SELECT CASE WHEN user_a = ? THEN user_b ELSE user_a END AS partner_id, shared_secs
+   FROM weekly_copresence
+   WHERE (user_a = ? OR user_b = ?) AND week_start = ?
+   ORDER BY shared_secs DESC LIMIT 1`
 );
 
 const TOKEN_MAX_AGE = 30 * 24 * 60 * 60; // 30 days in seconds
@@ -88,66 +228,120 @@ function checkRate(ip, action, maxPerMin) {
   return true;
 }
 
-// Username validation: 3-20 chars, alphanumeric + underscore
-const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
+// Periodic cleanup of stale rate limit entries (every 5 min)
+setInterval(() => {
+  const now = Date.now();
+  for (const key of Object.keys(rateLimits)) {
+    rateLimits[key] = rateLimits[key].filter(t => now - t < 60000);
+    if (rateLimits[key].length === 0) delete rateLimits[key];
+  }
+}, 5 * 60 * 1000);
+
+// Email validation
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Strip internal/sensitive fields before sending player data to clients
+function sanitizePlayer(p) {
+  return {
+    id: p.id, x: p.x, y: p.y, name: p.name, status: p.status,
+    direction: p.direction, room: p.room,
+    isFocusing: p.isFocusing, focusCategory: p.focusCategory,
+    giftPile: p.giftPile, isSitting: p.isSitting,
+    character: p.character, tagline: p.tagline,
+    languages: p.languages, timezoneHour: p.timezoneHour,
+    _userId: p._userId || null,
+    birthMonth: p.birthMonth ?? null,
+    profession: p.profession || "mystery",
+  };
+}
+function sanitizePlayers(all) {
+  const out = {};
+  for (const id of Object.keys(all)) out[id] = sanitizePlayer(all[id]);
+  return out;
+}
 
 // ============================================================
 // AUTH ENDPOINTS
 // ============================================================
-app.post("/api/register", (req, res) => {
+app.post("/api/register", async (req, res) => {
   const ip = req.ip;
   if (!checkRate(ip, "register", 3)) return res.status(429).json({ error: "Too many attempts. Try again later." });
 
-  const { username, password, name, character, tagline, languages } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: "Username and password required." });
-  if (typeof username !== "string" || !USERNAME_RE.test(username))
-    return res.status(400).json({ error: "Username must be 3-20 characters (letters, numbers, underscore)." });
+  const { email, password, name, character, tagline, languages, birthMonth, profession } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: "Email and password required." });
+  if (typeof email !== "string" || !EMAIL_RE.test(email))
+    return res.status(400).json({ error: "Please enter a valid email address." });
   if (typeof password !== "string" || password.length < 6 || password.length > 128)
     return res.status(400).json({ error: "Password must be 6-128 characters." });
 
-  // Check if username taken
-  if (stmtGetUserByUsername.get(username))
-    return res.status(409).json({ error: "Username already taken." });
+  // Check if email taken
+  if (stmtGetUserByEmail.get(email))
+    return res.status(409).json({ error: "Email already registered." });
 
-  const hash = bcrypt.hashSync(password, 10);
-  const safeName = typeof name === "string" ? truncateToDisplayWidth(name, 20) || "Anonymous" : "Anonymous";
+  const hash = await bcrypt.hash(password, 10);
+  const safeName = typeof name === "string" ? truncateToDisplayWidth(sanitizeText(name), 20) || "Anonymous" : "Anonymous";
   const safeChar = (character && typeof character === "object" && isValidCharConfig(character))
     ? JSON.stringify(character) : '{"preset":1}';
-  const safeTagline = typeof tagline === "string" ? truncateToDisplayWidth(tagline, 100) : "";
+  const safeTagline = typeof tagline === "string" ? truncateToDisplayWidth(sanitizeText(tagline), 100) : "";
   const validLangs = ["en", "zh-CN", "zh-TW"];
   const safeLangs = Array.isArray(languages) ? JSON.stringify(languages.filter(l => validLangs.includes(l))) : '["en"]';
 
+  const safeBirthMonth = (typeof birthMonth === "number" && Number.isInteger(birthMonth) && birthMonth >= 1 && birthMonth <= 12) ? birthMonth : null;
+  const safeProfession = (typeof profession === "string" && VALID_PROFESSIONS.includes(profession)) ? profession : "mystery";
+
   try {
-    const result = stmtInsertUser.run(username, hash, safeName, safeChar, safeTagline, safeLangs);
+    // Check if request carries a guest authToken → upgrade existing guest user
+    const guestAuthToken = req.body.authToken;
+    if (guestAuthToken) {
+      const tokenRow = stmtGetToken.get(guestAuthToken);
+      if (tokenRow) {
+        const existingUser = stmtGetUserById.get(tokenRow.user_id);
+        if (existingUser && existingUser.is_guest) {
+          // Upgrade guest → registered user
+          stmtUpgradeGuest.run(email, hash, safeName, safeChar, safeTagline, safeLangs, safeBirthMonth, safeProfession, existingUser.id);
+          const token = createAuthToken(existingUser.id);
+          return res.json({ token, userId: existingUser.id, email });
+        }
+      }
+    }
+
+    // Fallback: create new user
+    const result = stmtInsertUser.run(email, hash, safeName, safeChar, safeTagline, safeLangs, safeBirthMonth, safeProfession);
     const token = createAuthToken(result.lastInsertRowid);
-    res.json({ token, userId: result.lastInsertRowid, username });
+    res.json({ token, userId: result.lastInsertRowid, email });
   } catch (err) {
     res.status(500).json({ error: "Registration failed." });
   }
 });
 
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res) => {
   const ip = req.ip;
   if (!checkRate(ip, "login", 5)) return res.status(429).json({ error: "Too many attempts. Try again later." });
 
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: "Username and password required." });
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: "Email and password required." });
 
-  const user = stmtGetUserByUsername.get(username);
-  if (!user || !bcrypt.compareSync(password, user.password))
-    return res.status(401).json({ error: "Invalid username or password." });
+  const user = stmtGetUserByEmail.get(email);
+  if (!user || !(await bcrypt.compare(password, user.password)))
+    return res.status(401).json({ error: "Invalid email or password." });
 
   const token = createAuthToken(user.id);
+  const focusRecords = stmtGetFocusRecords.all(user.id).map(r => ({
+    taskName: r.task_name, category: r.category, duration: r.duration,
+    startTime: r.start_time, endTime: r.end_time,
+  }));
   res.json({
     token,
     userId: user.id,
-    username: user.username,
+    email: user.email,
     profile: {
       name: user.name,
-      character: JSON.parse(user.character),
+      character: safeJsonParse(user.character, { preset: 1 }),
       tagline: user.tagline,
-      languages: JSON.parse(user.languages),
+      languages: safeJsonParse(user.languages, ["en"]),
+      createdAt: user.created_at,
     },
+    focusRecords,
   });
 });
 
@@ -157,15 +351,57 @@ app.post("/api/logout", (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/weekly-recap", (req, res) => {
+  // Auth: Bearer token or ?token= query param
+  let token = null;
+  const auth = req.headers.authorization;
+  if (auth && auth.startsWith("Bearer ")) {
+    token = auth.slice(7);
+  } else if (req.query.token) {
+    token = req.query.token;
+  }
+  if (!token) return res.status(401).json({ error: "Authentication required." });
+
+  const authRow = stmtGetToken.get(token);
+  if (!authRow) return res.status(401).json({ error: "Invalid or expired token." });
+
+  const userId = authRow.user_id;
+  const weekStart = getLastWeekStart();
+
+  const stats = stmtGetWeeklyStats.get(userId, weekStart);
+  const copresence = stmtGetTopCopresence.get(userId, userId, userId, weekStart);
+
+  let topPartner = null;
+  if (copresence) {
+    const partner = stmtGetUserById.get(copresence.partner_id);
+    if (partner) {
+      topPartner = {
+        name: partner.name,
+        sharedHours: Math.round((copresence.shared_secs / 3600) * 10) / 10,
+      };
+    }
+  }
+
+  res.json({
+    weekStart,
+    onlineHours: stats ? Math.round((stats.online_secs / 3600) * 10) / 10 : 0,
+    reactionsReceived: stats ? stats.reactions_received : 0,
+    catGiftsReceived: stats ? stats.cat_gifts_received : 0,
+    topPartner,
+  });
+});
+
 // Helper: sync player profile to DB
 function syncProfileToDB(socketId) {
   const p = players[socketId];
-  if (!p || !p._userId) return;
+  if (!p) return;
   stmtUpdateProfile.run(
     p.name,
     JSON.stringify(p.character),
     p.tagline,
     JSON.stringify(p.languages || []),
+    p.birthMonth ?? null,
+    p.profession || "mystery",
     p._userId
   );
 }
@@ -197,6 +433,36 @@ function truncateToDisplayWidth(str, max) {
     i += ch.length;
   }
   return str.slice(0, i);
+}
+
+function safeJsonParse(str, fallback) {
+  try { return JSON.parse(str); }
+  catch { return fallback; }
+}
+
+// Strip HTML tags and dangerous Unicode control characters (RTL override, zero-width, etc.)
+function sanitizeText(str) {
+  return str
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, "") // zero-width & bidi overrides
+    .replace(/[<>]/g, ""); // strip angle brackets to prevent HTML injection
+}
+
+function getWeekStart(date = new Date()) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  const day = d.getDay();
+  const diff = day === 0 ? 6 : day - 1;
+  d.setDate(d.getDate() - diff);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getLastWeekStart() {
+  const d = new Date();
+  d.setDate(d.getDate() - 7);
+  return getWeekStart(d);
 }
 
 const CAMPFIRE_IDLE_MS = 60 * 1000;
@@ -288,7 +554,7 @@ const reactionCooldowns = {};
 const VALID_REACTIONS = ["👋", "💪", "❤️", "⭐"];
 
 // Gift pile for idle Lounge players
-const PILE_GIFT_INTERVAL = 15 * 60 * 1000; // 15min
+const PILE_GIFT_INTERVAL = IS_PROD ? 15 * 60 * 1000 : 15000; // prod: 15min, staging: 15s
 const MAX_GIFT_PILE = 10;
 
 // Walkable tile types (must match client)
@@ -734,15 +1000,16 @@ function onPlayerEnterRoom(playerId, room) {
       cat.curioTarget = playerId;
     }
   } else if (cat.room === room && cat.state !== "wander" && cat.state !== "gift_deliver") {
-    // Go to the entrance area to greet, not chase the player
-    const entrance = ENTRANCE[room] || PORTAL_SPAWN[room];
-    if (entrance) {
+    // Run partway toward the player and stop to watch (like a real cat)
+    const p = players[playerId];
+    if (p) {
       cat.state = "curious";
       cat.curioTarget = playerId;
       cat.onFurniture = null;
-      cat.faceDir = "down"; // face the arriving player
-      // Stay above the entrance (don't run past the door)
-      setCatTarget(entrance.x + (Math.random() - 0.5) * 64, entrance.y - 4 * TILE - Math.random() * 2 * TILE);
+      // Stop at ~35% of the way, keeping a comfortable distance
+      const stopX = cat.x + (p.x - cat.x) * 0.35;
+      const stopY = cat.y + (p.y - cat.y) * 0.35;
+      setCatTarget(stopX, stopY);
       cat.stateTimer = 120;
     }
   }
@@ -869,11 +1136,12 @@ function updateCat() {
 
         if (cat.curioTarget && players[cat.curioTarget] &&
             players[cat.curioTarget].room === cat.room) {
-          // Go to the entrance area to greet, not chase the player
-          const entrance = ENTRANCE[cat.room] || PORTAL_SPAWN[cat.room];
+          // Run partway toward the player and stop to watch
+          const cp = players[cat.curioTarget];
           cat.state = "curious";
-          cat.faceDir = "down"; // face the arriving player
-          setCatTarget(entrance.x + (Math.random() - 0.5) * 64, entrance.y - 4 * TILE - Math.random() * 2 * TILE);
+          const stopX = cat.x + (cp.x - cat.x) * 0.35;
+          const stopY = cat.y + (cp.y - cat.y) * 0.35;
+          setCatTarget(stopX, stopY);
           cat.stateTimer = 120;
         } else {
           const dims = ROOM_DIMS[cat.room];
@@ -891,16 +1159,6 @@ function updateCat() {
   // Gift pile delivery for idle Lounge players (priority over random gifts)
   const pileNow = Date.now();
   const restPlayers = getPlayersInRoom("rest");
-  if (!cat._pileLog) cat._pileLog = 0;
-  cat._pileLog++;
-  if (cat._pileLog % 100 === 0 && restPlayers.length > 0) {
-    restPlayers.forEach(p => {
-      const idle = Math.floor((pileNow - p.lastMoveTime) / 1000);
-      const expected = Math.floor((pileNow - p.lastMoveTime) / PILE_GIFT_INTERVAL);
-      console.log(`[PILE] player=${p.id.slice(0,6)} room=${p.room} idle=${idle}s expected=${expected} pileCount=${p.idlePileCount} pile=${p.giftPile.length}`);
-    });
-    console.log(`[PILE] cat: room=${cat.room} state=${cat.state} gift=${cat.gift} pending=${cat.pendingRoom}`);
-  }
   const idleCandidates = restPlayers.filter(p => {
     const expected = Math.floor((pileNow - p.lastMoveTime) / PILE_GIFT_INTERVAL);
     return expected > p.idlePileCount && p.idlePileCount < MAX_GIFT_PILE;
@@ -909,7 +1167,6 @@ function updateCat() {
     const idleTarget = idleCandidates[0];
 
     if (idleTarget) {
-      console.log(`[PILE] >>> Triggering delivery to ${idleTarget.id.slice(0,6)}`);
       if (cat.room === "rest") {
         cat.gift = GIFT_TYPES[Math.floor(Math.random() * GIFT_TYPES.length)];
         cat.giftTarget = idleTarget.id;
@@ -1098,6 +1355,15 @@ function updateCat() {
       return;
     }
 
+    // Curious: if target left the room, stop
+    if (cat.state === "curious" && cat.curioTarget) {
+      const cp = players[cat.curioTarget];
+      if (!cp || cp.room !== cat.room) {
+        cat.state = "sit"; cat.stateTimer = 100;
+        cat.curioTarget = null;
+      }
+    }
+
     // Gift delivery: follow target player, 10s timeout only after player moves
     if (cat.state === "gift_deliver" && cat.giftTarget) {
       const tp = players[cat.giftTarget];
@@ -1213,7 +1479,12 @@ function updateCat() {
           const target = players[cat.giftTarget];
           target.giftPile.push(cat.gift);
           target.idlePileCount++;
-          io.emit("giftPileUpdated", { id: cat.giftTarget, giftPile: [...target.giftPile] });
+          io.to(target.room).emit("giftPileUpdated", { id: cat.giftTarget, giftPile: [...target.giftPile] });
+
+          // Weekly stats: count cat gift received
+          try { stmtIncrCatGiftsReceived.run(target._userId, getWeekStart()); }
+          catch (e) { console.error("[WEEKLY] cat gift increment error:", e.message); }
+
           cat.state = "sit";
           cat.stateTimer = 150; // Sit and admire the pile
           cat._pileDelivery = false;
@@ -1246,7 +1517,7 @@ function updateCat() {
     // Fatigue care: approach players focusing 120min+
     const now = Date.now();
     const fatigued = nearby.filter(p =>
-      p.isFocusing && p.focusStartTime && (now - p.focusStartTime) > 120 * 60 * 1000 // 120min
+      p.isFocusing && p.focusStartTime && (now - p.focusStartTime) > (IS_PROD ? 120 * 60 * 1000 : 40000) // prod: 120min, staging: 40s
     );
     if (fatigued.length > 0 && Math.random() < 0.4) {
       const target = fatigued[Math.floor(Math.random() * fatigued.length)];
@@ -1444,12 +1715,22 @@ io.on("connection", (socket) => {
   let player;
   let dbUser = null;
 
-  // Priority 1: authToken → DB registered user
+  // Priority 1: authToken → DB user (registered or guest)
   if (authToken) {
     const tokenRow = stmtGetToken.get(authToken);
     if (tokenRow) {
       dbUser = stmtGetUserById.get(tokenRow.user_id);
     }
+  }
+
+  // No valid DB user → auto-create guest
+  let newGuestToken = null;
+  if (!dbUser) {
+    const guestEmail = `guest:${crypto.randomUUID()}`;
+    const result = stmtInsertGuestUser.run(guestEmail);
+    const guestId = result.lastInsertRowid;
+    newGuestToken = createAuthToken(guestId);
+    dbUser = stmtGetUserById.get(guestId);
   }
 
   if (sessionToken && sessions[sessionToken]) {
@@ -1466,17 +1747,16 @@ io.on("connection", (socket) => {
     player.id = socket.id;
     player.lastMoveTime = Date.now(); // reset so gift pile doesn't dump
 
-    // If DB user, overlay profile from DB (may have changed on another device)
-    if (dbUser) {
-      player.name = dbUser.name;
-      player.character = JSON.parse(dbUser.character);
-      player.tagline = dbUser.tagline;
-      player.languages = JSON.parse(dbUser.languages);
-      player._userId = dbUser.id;
-      player._username = dbUser.username;
-      // Track active connection for this registered user
-      userSocketMap[dbUser.id] = socket.id;
-    }
+    // Overlay profile from DB (may have changed on another device)
+    player.name = dbUser.name;
+    player.character = safeJsonParse(dbUser.character, { preset: 1 });
+    player.tagline = dbUser.tagline;
+    player.languages = safeJsonParse(dbUser.languages, ["en"]);
+    player.profession = dbUser.profession || "mystery";
+    player._userId = dbUser.id;
+    player._email = dbUser.email;
+    player._isRegistered = !dbUser.is_guest;
+    userSocketMap[dbUser.id] = socket.id;
 
     // Clean up old socket references
     if (oldId && oldId !== socket.id) {
@@ -1492,7 +1772,7 @@ io.on("connection", (socket) => {
     socketToSession[socket.id] = sessionToken;
     players[socket.id] = player;
     isResume = true;
-    console.log(`Player resumed: ${socket.id} (session ${sessionToken.slice(0, 8)}${dbUser ? ", user=" + dbUser.username : ""})`);
+    console.log(`Player resumed: ${socket.id} (session ${sessionToken.slice(0, 8)}${dbUser ? ", user=" + dbUser.email : ""})`);
   } else {
     // --- New connection ---
     const token = sessionToken || crypto.randomUUID();
@@ -1517,30 +1797,33 @@ io.on("connection", (socket) => {
       tagline: "",
       languages: [],
       timezoneHour: null,
+      birthMonth: null,
+      profession: "mystery",
     };
 
-    // If DB user, load profile from DB
-    if (dbUser) {
-      player.name = dbUser.name;
-      player.character = JSON.parse(dbUser.character);
-      player.tagline = dbUser.tagline;
-      player.languages = JSON.parse(dbUser.languages);
-      player._userId = dbUser.id;
-      player._username = dbUser.username;
-      userSocketMap[dbUser.id] = socket.id;
-    }
+    // Load profile from DB (all users have a DB row — guest or registered)
+    player.name = dbUser.name;
+    player.character = safeJsonParse(dbUser.character, { preset: 1 });
+    player.tagline = dbUser.tagline;
+    player.languages = safeJsonParse(dbUser.languages, ["en"]);
+    player.birthMonth = dbUser.birth_month ?? null;
+    player.profession = dbUser.profession || "mystery";
+    player._userId = dbUser.id;
+    player._email = dbUser.email;
+    player._isRegistered = !dbUser.is_guest;
+    userSocketMap[dbUser.id] = socket.id;
 
     players[socket.id] = player;
     sessions[token] = { playerId: socket.id, disconnectTimer: null, playerSnapshot: { ...player, giftPile: [], languages: [...(player.languages || [])] } };
     socketToSession[socket.id] = token;
-    console.log(`Player connected: ${socket.id} (session ${token.slice(0, 8)}${dbUser ? ", user=" + dbUser.username : ""})`);
+    console.log(`Player connected: ${socket.id} (session ${token.slice(0, 8)}${dbUser ? ", user=" + dbUser.email : ""})`);
   }
 
   // Join the correct room
   socket.join(player.room);
 
   // Send state to client
-  socket.emit("currentPlayers", players);
+  socket.emit("currentPlayers", sanitizePlayers(players));
   socket.emit("roomDimensions", ROOM_DIMS);
   socket.emit("chatHistory", chatHistory);
   socket.emit("catUpdate", {
@@ -1556,6 +1839,9 @@ io.on("connection", (socket) => {
   });
   socket.emit("campfireStates", campfireStates);
 
+  // Update last_seen for activity tracking
+  stmtUpdateLastSeen.run(player._userId);
+
   // Tell client whether this is a resume
   socket.emit("sessionRestored", {
     sessionToken: socketToSession[socket.id],
@@ -1569,14 +1855,20 @@ io.on("connection", (socket) => {
     giftPile: player.giftPile,
     isSitting: player.isSitting,
     status: player.status,
-    isRegistered: !!player._userId,
-    username: player._username || null,
+    isRegistered: !dbUser.is_guest,
+    email: player._email || null,
+    userId: player._userId,
+    authToken: newGuestToken || undefined,
+    focusRecords: stmtGetFocusRecords.all(player._userId).map(r => ({
+      taskName: r.task_name, category: r.category, duration: r.duration,
+      startTime: r.start_time, endTime: r.end_time,
+    })),
   });
 
   if (isResume) {
-    socket.broadcast.emit("playerJoined", players[socket.id]);
+    socket.broadcast.emit("playerJoined", sanitizePlayer(players[socket.id]));
   } else {
-    socket.broadcast.emit("playerJoined", players[socket.id]);
+    socket.broadcast.emit("playerJoined", sanitizePlayer(players[socket.id]));
     onPlayerEnterRoom(socket.id, "focus");
   }
 
@@ -1591,9 +1883,12 @@ io.on("connection", (socket) => {
       const wasSleeping = cat.state === "sleep";
       // Zoomies cat is unstoppable, gift_deliver cat is on a mission
       const ignoresPet = cat.state === "zoomies" || cat.state === "gift_deliver";
+      // Moving cat: 40% chance to stop and sit, 60% just heart & keep going
+      const isMoving = cat.state === "wander" || cat.state === "curious" || cat.state === "leg_rub";
+      const keepGoing = isMoving && Math.random() < 0.6;
       io.emit("catPetted", { x: Math.round(cat.x), y: Math.round(cat.y), wasSleeping, ignoresPet });
-      // Sleeping cat stays asleep; zoomies/gift cat ignores; others sit happily
-      if (!wasSleeping && !ignoresPet) {
+      // Sleeping cat stays asleep; zoomies/gift cat ignores; moving cat might keep going
+      if (!wasSleeping && !ignoresPet && !keepGoing) {
         cat.state = "sit";
         cat.stateTimer = 200;
         cat.targetX = cat.x;
@@ -1614,19 +1909,18 @@ io.on("connection", (socket) => {
   });
 
   socket.on("sendReaction", (data) => {
-    console.log(`[REACT] received sendReaction from ${socket.id}`, JSON.stringify(data));
-    if (!players[socket.id]) { console.log("[REACT] FAIL: no sender player"); return; }
-    if (!data || typeof data !== "object") { console.log("[REACT] FAIL: bad data"); return; }
+    if (!players[socket.id]) return;
+    if (!data || typeof data !== "object") return;
     const sender = players[socket.id];
     const target = players[data.targetId];
-    if (!target) { console.log("[REACT] FAIL: target not found, targetId:", data.targetId); return; }
-    if (sender.room !== target.room) { console.log("[REACT] FAIL: room mismatch", sender.room, target.room); return; }
-    if (!VALID_REACTIONS.includes(data.emoji)) { console.log("[REACT] FAIL: invalid emoji", JSON.stringify(data.emoji), "len:", data.emoji.length); return; }
+    if (!target) return;
+    if (sender.room !== target.room) return;
+    if (!VALID_REACTIONS.includes(data.emoji)) return;
 
     // Per sender-target pair cooldown
     const key = `${socket.id}->${data.targetId}`;
     const now = Date.now();
-    if (reactionCooldowns[key] && now - reactionCooldowns[key] < REACTION_COOLDOWN) { console.log("[REACT] FAIL: cooldown"); return; }
+    if (reactionCooldowns[key] && now - reactionCooldowns[key] < REACTION_COOLDOWN) return;
     reactionCooldowns[key] = now;
 
     const payload = {
@@ -1640,13 +1934,21 @@ io.on("connection", (socket) => {
       y: target.y,
       timestamp: now,
     };
-    console.log(`[REACT] OK ${sender.name} -> ${target.name} ${data.emoji} (room: ${sender.room})`);
     io.emit("emojiReaction", payload);
+
+    // Weekly stats: count reaction received
+    try { stmtIncrReactionsReceived.run(target._userId, getWeekStart()); }
+    catch (e) { console.error("[WEEKLY] reaction increment error:", e.message); }
   });
 
   socket.on("playerMove", (data) => {
     if (!players[socket.id]) return;
+    if (!data || !Number.isFinite(data.x) || !Number.isFinite(data.y)) return;
+    const validDirs = ["up", "down", "left", "right"];
+    if (!validDirs.includes(data.direction)) return;
     const p = players[socket.id];
+    const dims = ROOM_DIMS[p.room];
+    if (dims && (data.x < 0 || data.y < 0 || data.x > dims.cols * TILE || data.y > dims.rows * TILE)) return;
     p.x = data.x;
     p.y = data.y;
     p.direction = data.direction;
@@ -1655,7 +1957,7 @@ io.on("connection", (socket) => {
 
     // Scatter gift pile on movement
     if (p.giftPile.length > 0) {
-      io.emit("giftPileScatter", { id: socket.id, gifts: [...p.giftPile], x: p.x, y: p.y });
+      io.to(p.room).emit("giftPileScatter", { id: socket.id, gifts: [...p.giftPile], x: p.x, y: p.y });
       p.giftPile = [];
       p.idlePileCount = 0;
     }
@@ -1689,10 +1991,10 @@ io.on("connection", (socket) => {
     players[socket.id].x = spawn.x;
     players[socket.id].y = spawn.y;
 
-    // Clear gift pile on room change
+    // Clear gift pile on room change (scatter in old room)
     const pl = players[socket.id];
     if (pl.giftPile.length > 0) {
-      io.emit("giftPileScatter", { id: socket.id, gifts: [...pl.giftPile], x: pl.x, y: pl.y });
+      io.to(oldRoom).emit("giftPileScatter", { id: socket.id, gifts: [...pl.giftPile], x: pl.x, y: pl.y });
       pl.giftPile = [];
     }
     pl.idlePileCount = 0;
@@ -1763,7 +2065,8 @@ io.on("connection", (socket) => {
     const msg = {
       id: socket.id,
       name: sender.name,
-      text: text.trim().slice(0, 200),
+      profession: sender.profession || "mystery",
+      text: sanitizeText(text.trim()).slice(0, 200),
       time: Date.now(),
       scope,
     };
@@ -1791,8 +2094,8 @@ io.on("connection", (socket) => {
   socket.on("setName", (name) => {
     if (!players[socket.id]) return;
     if (typeof name !== "string") return;
-    players[socket.id].name = truncateToDisplayWidth(name, 20);
-    io.emit("playerUpdated", players[socket.id]);
+    players[socket.id].name = truncateToDisplayWidth(sanitizeText(name), 20);
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
     updateSessionSnapshot(socket.id);
     syncProfileToDB(socket.id);
   });
@@ -1802,7 +2105,7 @@ io.on("connection", (socket) => {
     if (typeof config === "string") return;
     if (!isValidCharConfig(config)) return;
     players[socket.id].character = config;
-    io.emit("playerUpdated", players[socket.id]);
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
     updateSessionSnapshot(socket.id);
     syncProfileToDB(socket.id);
   });
@@ -1810,8 +2113,8 @@ io.on("connection", (socket) => {
   socket.on("setTagline", (tagline) => {
     if (!players[socket.id]) return;
     if (typeof tagline !== "string") return;
-    players[socket.id].tagline = truncateToDisplayWidth(tagline, 100);
-    io.emit("playerUpdated", players[socket.id]);
+    players[socket.id].tagline = truncateToDisplayWidth(sanitizeText(tagline), 100);
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
     updateSessionSnapshot(socket.id);
     syncProfileToDB(socket.id);
   });
@@ -1819,19 +2122,51 @@ io.on("connection", (socket) => {
   socket.on("setLanguages", (langs) => {
     if (!players[socket.id]) return;
     if (!Array.isArray(langs)) return;
-    const valid = ["en", "zh-CN", "zh-TW"];
+    const valid = ["en", "zh-CN", "zh-TW", "ja", "ko"];
     const filtered = langs.filter(l => valid.includes(l));
     if (filtered.length === 0) return;
     players[socket.id].languages = filtered;
-    io.emit("playerUpdated", players[socket.id]);
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
     updateSessionSnapshot(socket.id);
     syncProfileToDB(socket.id);
   });
 
+  socket.on("setBirthMonth", (month) => {
+    if (!players[socket.id]) return;
+    if (month !== null && (typeof month !== "number" || !Number.isInteger(month) || month < 1 || month > 12)) return;
+    players[socket.id].birthMonth = month;
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
+    updateSessionSnapshot(socket.id);
+    syncProfileToDB(socket.id);
+  });
+
+  socket.on("setProfession", (prof) => {
+    if (!players[socket.id]) return;
+    if (typeof prof !== "string" || !VALID_PROFESSIONS.includes(prof)) return;
+    players[socket.id].profession = prof;
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
+    updateSessionSnapshot(socket.id);
+    syncProfileToDB(socket.id);
+  });
+
+  socket.on("saveFocusRecord", (record) => {
+    const p = players[socket.id];
+    if (!p) return;
+    if (!record || typeof record !== "object") return;
+    const taskName = typeof record.taskName === "string" ? sanitizeText(record.taskName).slice(0, 100) : "";
+    const category = typeof record.category === "string" ? record.category.slice(0, 20) : "study";
+    const duration = typeof record.duration === "number" ? Math.floor(record.duration) : 0;
+    const startTime = typeof record.startTime === "number" ? Math.floor(record.startTime) : 0;
+    const endTime = typeof record.endTime === "number" ? Math.floor(record.endTime) : 0;
+    if (duration < 5000 || startTime <= 0 || endTime <= 0 || endTime <= startTime) return;
+    stmtInsertFocusRecord.run(p._userId, taskName, category, duration, startTime, endTime);
+  });
+
   socket.on("setTimezoneHour", (hour) => {
     if (!players[socket.id]) return;
-    if (typeof hour !== "number" || hour < 0 || hour > 23) return;
+    if (typeof hour !== "number" || !Number.isFinite(hour) || hour < 0 || hour > 23) return;
     players[socket.id].timezoneHour = Math.floor(hour);
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
     updateSessionSnapshot(socket.id);
   });
 
@@ -1866,13 +2201,17 @@ io.on("connection", (socket) => {
 
   socket.on("setStatus", (status) => {
     if (!players[socket.id]) return;
+    if (typeof status !== "string") return;
+    const validStatuses = ["studying","working","reading","coding","resting","chatting","listening","watching","napping","snacking","browsing","wandering","daydreaming","focusing"];
+    if (!validStatuses.includes(status)) return;
     players[socket.id].status = status;
-    io.emit("playerUpdated", players[socket.id]);
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
     updateSessionSnapshot(socket.id);
   });
 
   socket.on("startFocus", (data) => {
     if (!players[socket.id]) return;
+    if (players[socket.id].isFocusing) return;
     if (players[socket.id].room !== "focus") return;
     if (typeof data !== "object" || !data) return;
 
@@ -1884,7 +2223,7 @@ io.on("connection", (socket) => {
     players[socket.id].focusCategory = category;
     players[socket.id].status = "focusing";
 
-    io.emit("playerUpdated", players[socket.id]);
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
     updateSessionSnapshot(socket.id);
   });
 
@@ -1897,7 +2236,7 @@ io.on("connection", (socket) => {
     players[socket.id].focusCategory = null;
     players[socket.id].status = "resting";
 
-    io.emit("playerUpdated", players[socket.id]);
+    io.emit("playerUpdated", sanitizePlayer(players[socket.id]));
     updateSessionSnapshot(socket.id);
   });
 
@@ -1914,8 +2253,105 @@ io.on("connection", (socket) => {
       const y = Math.round(p.y);
       console.log(`[SIT] ${name} (${socket.id}) room=${p.room} x=${x} y=${y}`);
     }
-    io.emit("playerUpdated", p);
+    io.emit("playerUpdated", sanitizePlayer(p));
     updateSessionSnapshot(socket.id);
+  });
+
+  // Bulletin board
+  let bulletinCooldown = 0;
+  const BULLETIN_COOLDOWN_MS = 30000;
+  const BULLETIN_NOTE_COLORS = ["yellow", "pink", "blue", "green", "purple"];
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+  socket.on("getBulletinNotes", () => {
+    if (!players[socket.id]) return;
+    const now = Date.now();
+    const cutoff = now - SEVEN_DAYS_MS;
+    const announcements = stmtGetAnnouncements.all(now);
+    const notes = stmtGetPlayerNotes.all(cutoff);
+    // Attach like counts
+    for (const n of notes) {
+      const row = stmtLikeCount.get(n.id);
+      n.like_count = row ? row.cnt : 0;
+    }
+    // Mark ownership and get liked note IDs
+    const p = players[socket.id];
+    let myLikedIds = [];
+    if (p) {
+      for (const n of notes) {
+        n._isMine = (n.author_id === p._userId);
+      }
+      myLikedIds = stmtUserLikes.all(p._userId).map(r => r.note_id);
+    }
+    socket.emit("bulletinNotes", { announcements, notes, myLikedIds });
+  });
+
+  socket.on("addBulletinNote", (data) => {
+    const p = players[socket.id];
+    if (!p) return;
+    if (!data || typeof data !== "object") return;
+    const now = Date.now();
+
+    // Cooldown
+    if (now < bulletinCooldown) return;
+
+    // Validate text
+    let text = typeof data.text === "string" ? sanitizeText(data.text.trim()) : "";
+    if (!text || text.length === 0) return;
+    text = truncateToDisplayWidth(text, 100);
+    if (!text) return;
+
+    const cutoff = now - SEVEN_DAYS_MS;
+    // Enforce 20-note wall capacity
+    const count = stmtCountPlayerNotes.get(cutoff);
+    if (count && count.cnt >= 20) {
+      stmtDeleteOldestNote.run();
+    }
+
+    const color = BULLETIN_NOTE_COLORS.includes(data.color) ? data.color : BULLETIN_NOTE_COLORS[Math.floor(Math.random() * BULLETIN_NOTE_COLORS.length)];
+    const prof = p.profession || "mystery";
+    const result = stmtInsertNote.run("global", p.name, p._userId, text, color, 0, now, null, prof);
+    bulletinCooldown = now + BULLETIN_COOLDOWN_MS;
+
+    const note = { id: result.lastInsertRowid, room: "global", author_name: p.name, author_id: p._userId, text, color, is_announcement: 0, created_at: now, author_profession: prof };
+    io.emit("bulletinNoteAdded", note);
+  });
+
+  socket.on("deleteBulletinNote", (data) => {
+    const p = players[socket.id];
+    if (!p) return;
+    if (!data || !Number.isInteger(data.id)) return;
+    // Verify ownership first, then delete likes
+    const del = stmtDeleteNoteById.run(data.id, p._userId);
+    if (del.changes > 0) {
+      stmtDeleteNoteLikes.run(data.id);
+      io.emit("bulletinNoteDeleted", { id: data.id });
+    }
+  });
+
+  let lastLikeTime = 0;
+  socket.on("likeBulletinNote", (data) => {
+    const now = Date.now();
+    if (now - lastLikeTime < 1000) return; // 1s cooldown
+    lastLikeTime = now;
+    const p = players[socket.id];
+    if (!p) return;
+    if (!data || !Number.isInteger(data.noteId)) return;
+    const noteId = data.noteId;
+    // Check note exists and user is not the author
+    const note = stmtNoteAuthor.get(noteId);
+    if (!note) return;
+    // Self-like allowed
+    // Toggle
+    const existing = stmtLikeCheck.get(noteId, p._userId);
+    if (existing) {
+      stmtLikeDelete.run(noteId, p._userId);
+    } else {
+      stmtLikeInsert.run(noteId, p._userId);
+    }
+    const countRow = stmtLikeCount.get(noteId);
+    const likeCount = countRow ? countRow.cnt : 0;
+    io.emit("bulletinNoteLikeUpdated", { noteId, likeCount });
   });
 
   // Tab close: client signals intentional close → skip grace period
@@ -1979,6 +2415,51 @@ setInterval(() => {
   stmtDeleteExpiredTokens.run();
 }, 5 * 60 * 1000);
 
+// Bulletin board: clean expired notes every hour + guest cleanup
+setInterval(() => {
+  const now = Date.now();
+  const cutoff = now - 7 * 24 * 60 * 60 * 1000;
+  stmtCleanExpiredNotes.run(cutoff, now);
+  // Remove guest users inactive for 30+ days (CASCADE deletes related data)
+  stmtCleanupGuests.run();
+}, 60 * 60 * 1000);
+
+// Weekly stats: record online time and copresence every 60 seconds
+const weeklyStatsCollect = db.transaction((weekStart, onlineUserIds, roomGroups) => {
+  for (const uid of onlineUserIds) {
+    stmtUpsertOnlineSecs.run(uid, weekStart);
+  }
+  for (const uids of Object.values(roomGroups)) {
+    for (let i = 0; i < uids.length; i++) {
+      for (let j = i + 1; j < uids.length; j++) {
+        const a = Math.min(uids[i], uids[j]);
+        const b = Math.max(uids[i], uids[j]);
+        stmtUpsertCopresence.run(a, b, weekStart);
+      }
+    }
+  }
+});
+
+setInterval(() => {
+  const weekStart = getWeekStart();
+  const seen = new Set();
+  const onlineUserIds = [];
+  const roomGroups = {};
+
+  for (const p of Object.values(players)) {
+    if (seen.has(p._userId)) continue;
+    seen.add(p._userId);
+    onlineUserIds.push(p._userId);
+    if (!roomGroups[p.room]) roomGroups[p.room] = [];
+    roomGroups[p.room].push(p._userId);
+  }
+
+  if (onlineUserIds.length > 0) {
+    try { weeklyStatsCollect(weekStart, onlineUserIds, roomGroups); }
+    catch (e) { console.error("[WEEKLY] stats collect error:", e.message); }
+  }
+}, 60 * 1000);
+
 const serverStartTime = Date.now();
 
 function formatDuration(ms) {
@@ -1991,6 +2472,8 @@ function formatDuration(ms) {
 }
 
 app.get("/admin/stats", (req, res) => {
+  const secret = process.env.ADMIN_SECRET;
+  if (!secret || req.query.key !== secret) return res.status(403).json({ error: "Forbidden" });
   const now = Date.now();
   const list = Object.values(players).map(p => ({
     name: p.name,
@@ -2021,7 +2504,34 @@ app.get("/admin/stats", (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+// Config endpoint for client-side env-aware parameters
+app.get('/api/config', (req, res) => {
+  res.json({
+    env: APP_ENV,
+    auraStageMs: IS_PROD ? 1800000 : 10000, // prod: 30min, staging: 10s
+  });
 });
+
+// Vite middleware (dev) or static files (production)
+const isDev = !fs.existsSync(distPath);
+
+(async () => {
+  if (isDev) {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true, hmr: { server } },
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(distPath));
+    app.use(express.static(path.join(__dirname, 'public')));
+    app.get('/{*splat}', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  const PORT = process.env.PORT || 3000;
+  server.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT} [${APP_ENV}] (${isDev ? 'dev' : 'built'})`);
+  });
+})();

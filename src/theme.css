@@ -1,0 +1,166 @@
+/*
+ * Beside Theme — Layout, Resets & Overrides
+ *
+ * Design tokens (colors, spacing, fonts) live in /public/tokens.css
+ * and are loaded via <link> in index.html before this file.
+ */
+
+/* Reset — must be in @layer base so pxlkit utility classes (px-3 etc.) win */
+@layer base {
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  button, input, select, textarea { font-family: inherit; }
+  input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--retro-primary);
+  }
+}
+
+/* Map Tailwind font-size classes → our tokens.
+   text-xs → fs-sm (14px) because game UI minimum is 14px.
+   --fs-xs (12px) is reserved for dense data (heatmap, etc.) via direct var(). */
+.text-\[9px\],
+.text-\[10px\],
+.text-\[11px\],
+.text-xs   { font-size: var(--fs-sm) !important; }
+.text-sm   { font-size: var(--fs-sm) !important; }
+.text-base { font-size: var(--fs-md) !important; }
+.text-lg   { font-size: var(--fs-lg) !important; }
+.text-xl   { font-size: var(--fs-xl) !important; }
+
+body {
+  background: var(--retro-body-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  font-family: 'FusionPixel', 'MiSans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--retro-text);
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body.font-misans {
+  font-family: 'MiSans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+#game-container {
+  position: relative;
+  overflow: hidden;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+}
+
+canvas#game {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+#ui-root {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* All React UI children re-enable pointer events */
+#ui-root > * {
+  pointer-events: auto;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: var(--retro-border); border-radius: 0; }
+
+/* pxlkit border-radius override → var(--radius-md) */
+[class*="rounded-[5px]"] { border-radius: var(--radius-md) !important; }
+
+/* pxlkit component overrides — follow body font setting */
+[class*="font-pixel"], .font-pixel,
+[class*="font-mono"], .font-mono {
+  font-family: 'FusionPixel', 'MiSans', 'PingFang SC', 'Microsoft YaHei', monospace !important;
+}
+body.font-misans [class*="font-pixel"],
+body.font-misans .font-pixel,
+body.font-misans [class*="font-mono"],
+body.font-misans .font-mono {
+  font-family: 'MiSans', 'PingFang SC', 'Microsoft YaHei', sans-serif !important;
+}
+
+/* Character customizer — game.js global classes */
+.cust-option {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border: var(--border-md) solid var(--retro-divider);
+  border-radius: var(--radius-sm);
+  background: var(--retro-surface);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--retro-muted);
+  transition: all 0.2s;
+}
+.cust-option:hover { border-color: var(--retro-primary); }
+.cust-option.selected { border-color: var(--retro-primary); background: var(--retro-primary-15); color: var(--retro-text); }
+
+.cust-premade {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.cust-premade canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  position: relative;
+  top: -6px;
+}
+.cust-premade.selected { border-color: var(--retro-primary); background: var(--retro-primary-15); }
+
+.cust-variant {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: var(--border-md) solid var(--retro-divider);
+  border-radius: var(--radius-sm);
+  background: var(--retro-surface);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--retro-muted);
+  transition: all 0.2s;
+}
+.cust-variant:hover { border-color: var(--retro-primary); }
+.cust-variant.selected { border-color: var(--retro-primary); background: var(--retro-primary-15); color: var(--retro-text); }
+
+/* Keyframes */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes playerCardIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes rotate-hint {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(90deg); }
+}

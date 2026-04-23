@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bulletin Board - NES.css Style</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/nes.css@2.3.0/css/nes.min.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #212529;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 12px;
+    color: #fff;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  /* Main panel */
+  .panel {
+    width: 500px;
+    max-width: 95vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 1.5rem;
+  }
+  .panel-title {
+    text-align: center;
+    color: #f7d51d;
+    margin-bottom: 12px;
+    font-size: 14px;
+  }
+  .section-label {
+    color: #92cc41;
+    font-size: 10px;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+  .scroll-area {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    margin-bottom: 12px;
+    max-height: 50vh;
+  }
+  /* Announcements */
+  .ann-item {
+    padding: 8px;
+    margin-bottom: 8px;
+    background: rgba(247,213,29,0.08);
+    border-left: 4px solid #f7d51d;
+  }
+  .ann-text { color: #fff; font-size: 10px; word-break: break-word; }
+  .ann-meta { color: #888; font-size: 8px; margin-top: 4px; }
+  .divider {
+    height: 4px;
+    margin: 10px 0;
+    background: repeating-linear-gradient(90deg, #555 0px, #555 4px, transparent 4px, transparent 8px);
+  }
+  /* Note cards */
+  .notes-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .note-card {
+    padding: 10px;
+    font-size: 10px;
+    word-break: break-word;
+  }
+  .note-card.color-yellow { background: #f7d51d; color: #212529; }
+  .note-card.color-pink   { background: #e76e55; color: #fff; }
+  .note-card.color-blue   { background: #209cee; color: #fff; }
+  .note-card.color-green  { background: #92cc41; color: #212529; }
+  .note-card.color-purple { background: #b476e5; color: #fff; }
+  .note-text { margin-bottom: 4px; }
+  .note-meta { font-size: 8px; opacity: 0.7; }
+  .note-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+  .note-like { font-size: 8px; opacity: 0.7; cursor: pointer; }
+  .note-like.liked { color: #e76e55; opacity: 1; }
+  .note-delete { font-size: 8px; opacity: 0.5; cursor: pointer; }
+  /* Input */
+  .input-area { margin-bottom: 8px; }
+  .input-area textarea {
+    width: 100%;
+    background: #212529;
+    color: #fff;
+    border: none;
+    padding: 8px;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 10px;
+    resize: none;
+    outline: none;
+  }
+  .input-area textarea::placeholder { color: #555; }
+  .counter { text-align: right; font-size: 8px; color: #555; }
+  /* Buttons */
+  .actions {
+    display: flex;
+    gap: 8px;
+  }
+  .actions .nes-btn { flex: 1; font-size: 10px; }
+  .empty-msg {
+    text-align: center;
+    color: #888;
+    font-size: 10px;
+    padding: 20px 0;
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+<div class="overlay">
+  <div class="nes-container is-dark panel">
+    <div class="panel-title">Bulletin Board</div>
+    <div class="scroll-area">
+      <div class="section-label">Announcements</div>
+      <div class="ann-item">
+        <div class="ann-text">Welcome to the cozy space! Feel free to leave a note.</div>
+        <div class="ann-meta">Admin - 2 hours ago</div>
+      </div>
+      <div class="divider"></div>
+      <div class="section-label">Notes</div>
+      <div class="notes-grid">
+        <div class="nes-container note-card color-yellow">
+          <div class="note-text">Having a great study session today!</div>
+          <div class="note-footer">
+            <span class="note-meta">Alice</span>
+            <span class="note-like liked">&#10084; 3</span>
+          </div>
+        </div>
+        <div class="nes-container note-card color-pink">
+          <div class="note-text">The cat is so cute~</div>
+          <div class="note-footer">
+            <span class="note-meta">Bob</span>
+            <span class="note-like">&#9825; 1</span>
+          </div>
+        </div>
+        <div class="nes-container note-card color-blue">
+          <div class="note-text">Focus mode activated!</div>
+          <div class="note-footer">
+            <span class="note-meta">Charlie</span>
+            <span class="note-like">&#9825; 0</span>
+          </div>
+        </div>
+        <div class="nes-container note-card color-green">
+          <div class="note-text">Good vibes only :)</div>
+          <div class="note-footer">
+            <span class="note-meta">Dana</span>
+            <span class="note-like liked">&#10084; 5</span>
+          </div>
+        </div>
+        <div class="nes-container note-card color-purple">
+          <div class="note-text">Anyone want to study together?</div>
+          <div class="note-footer">
+            <span class="note-meta">Eve</span>
+            <span class="note-like">&#9825; 2</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="input-area">
+      <div class="nes-container is-dark" style="padding:0;">
+        <textarea rows="2" placeholder="Leave a note..."></textarea>
+      </div>
+      <div class="counter">0/100</div>
+    </div>
+    <div class="actions">
+      <button class="nes-btn">Close</button>
+      <button class="nes-btn is-warning">Post</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

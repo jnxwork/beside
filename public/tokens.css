@@ -1,0 +1,172 @@
+/*
+ * Beside Design Tokens — Single Source of Truth
+ *
+ * ALL design variables defined here. Referenced by:
+ *   - ./index.html        (Vite + React, via <link>)
+ *   - public/index.html   (Express legacy, via <link>)
+ *   - src/theme.css        (layout/resets/overrides only, tokens come from here)
+ *
+ * To change a color / spacing / size: edit THIS file, everything else follows.
+ */
+
+/* ── FusionPixel font faces ── */
+@font-face {
+  font-family: 'FusionPixel';
+  src: url('/fonts/fusion-pixel-12px-proportional-zh_hans.otf.woff2') format('woff2');
+  unicode-range: U+4E00-9FFF, U+3400-4DBF, U+3000-303F, U+FF00-FFEF, U+2000-206F;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'FusionPixel';
+  src: url('/fonts/fusion-pixel-12px-proportional-latin.otf.woff2') format('woff2');
+  unicode-range: U+0000-024F, U+1E00-1EFF, U+2100-214F, U+2200-22FF;
+  font-display: swap;
+}
+
+/* ───── Design Tokens ───── */
+:root, :host {
+
+  /* ── Colors: 晨雾蓝灰 (morning-mist blue-gray) ── */
+  --retro-bg: #2e3a4a;
+  --retro-surface: #354050;
+  --retro-card: #3c4860;
+  --retro-text: #e4e0d8;
+  --retro-muted: #b0b8c4;
+  --retro-muted-light: #a0b0c0;
+  --retro-primary: #88c0d6;
+  --retro-primary-hover: #78b0c6;
+  --retro-secondary: #6a7a90;
+  --retro-border: #4a5a6e;
+  --retro-divider: #404e60;
+  --retro-red: #e48888;
+  --retro-input-bg: #2a3544;
+  --retro-white: #e4e0d8;
+  --retro-overlay: rgba(20,28,40,0.6);
+
+  /* pxlkit compatibility aliases */
+  --retro-accent: #88c0d6;
+  --retro-green: #88c0d6;
+  --retro-green-hover: #78b0c6;
+  --retro-cyan: #88c0d6;
+  --retro-gold: #88c0d6;
+  --retro-purple: #b0a0c8;
+  --retro-pink: #c06080;
+
+  /* Accent alpha ramp */
+  --retro-primary-8: rgba(136,192,214,0.08);
+  --retro-primary-10: rgba(136,192,214,0.10);
+  --retro-primary-12: rgba(136,192,214,0.12);
+  --retro-primary-15: rgba(136,192,214,0.15);
+  --retro-primary-30: rgba(136,192,214,0.30);
+  --retro-primary-40: rgba(136,192,214,0.40);
+
+  /* Secondary alpha */
+  --retro-secondary-8: rgba(106,122,144,0.08);
+
+  /* Semantic colors */
+  --retro-system: #d4a050;
+  --retro-nearby: #88c498;
+  --retro-recording: #e83030;
+
+  /* Room colors */
+  --retro-focus-bg: rgba(90,142,168,0.12);
+  --retro-lounge-bg: rgba(136,120,168,0.12);
+
+  /* ── Shadows ── */
+  --retro-shadow-sm: 2px 2px 0 rgba(0,0,0,0.15);
+  --pxl-bevel: inset -2px -2px 0 0 rgba(0,0,0,0.2),
+               inset 2px 2px 0 0 rgba(255,255,255,0.08),
+               0 0 0 1px rgba(255,255,255,0.06),
+               3px 3px 0 0 rgba(0,0,0,0.3);
+  --btn-shadow: 3px 3px 0 0 rgba(0,0,0,0.15);
+
+  /* Panel shared style (frosted glass) */
+  --panel-bg: rgba(42,50,66,0.88);
+  --panel-border: rgba(255,255,255,0.06);
+
+  /* ── Bulletin note colors (pixel sticky notes, WCAG 2.1 AA compliant) ── */
+  --note-yellow: #7a5818;
+  --note-yellow-border: #a88030;
+  --note-pink: #7a3850;
+  --note-pink-border: #a84868;
+  --note-blue: #385070;
+  --note-blue-border: #486898;
+  --note-green: #326038;
+  --note-green-border: #4a8a54;
+  --note-purple: #584070;
+  --note-purple-border: #7a5898;
+  --note-text: #e4e0d8;
+  --note-meta: #d0ccc4;
+  --note-ink-muted: #b0a89c;
+  --note-liked: #e06068;
+  --note-delete-hover: #d04848;
+
+  /* ── Name visibility colors ── */
+  --name-self: #A0F0B0;
+  --name-self-bg: rgba(160,240,176,0.1);
+  --name-followed: #FF8FAB;
+  --name-followed-bg: rgba(255,143,171,0.1);
+  --name-others: #ffffff;
+  --name-others-bg: rgba(255,255,255,0.1);
+
+  /* ── Font sizes ── */
+  --fs-xs: 12px;
+  --fs-sm: 14px;
+  --fs-md: 16px;
+  --fs-lg: 24px;
+  --fs-xl: 24px;
+  --fs-2xl: 36px;
+  --fs-3xl: 48px;
+
+  /* ── Spacing (Open Props --size-px-* scale + bridge) ── */
+  --size-px-0-5: 2px;
+  --size-px-1: 4px;
+  --size-px-2: 8px;
+  --size-px-2-5: 12px;
+  --size-px-3: 16px;
+  --size-px-4: 20px;
+  --size-px-5: 24px;
+  --size-px-7: 32px;
+  --size-px-8: 48px;
+  --size-px-9: 64px;
+
+  /* ── Border widths ── */
+  --border-thin: 1px;
+  --border-md: 2px;
+
+  /* ── Border radius ── */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* ── Transition durations ── */
+  --duration-fast: 0.15s;
+  --duration-normal: 0.2s;
+  --duration-slow: 0.3s;
+
+  /* ── Z-index layers ── */
+  --z-panel: 12;
+  --z-chat: 20;
+  --z-hint: 25;
+  --z-settings: 26;
+  --z-popup: 35;
+  --z-card: 40;
+  --z-selector: 41;
+  --z-loading: 100;
+  --z-rotate: 99999;
+
+  /* ── Colors (extra) ── */
+  --retro-body-bg: #242e3c;
+
+  /* ── Sizes ── */
+  --ui-icon-frame-size: 40px;
+  --ui-icon-inner-size: 24px;
+  --ui-icon-radius: 0;
+  --ui-emoji-min-size: var(--ui-icon-inner-size);
+  --ui-online-emoji-size: 20px;
+
+  /* ── Icon sizes ── */
+  --icon-sm: 16px;
+  --icon-md: 20px;
+  --icon-lg: 24px;
+}

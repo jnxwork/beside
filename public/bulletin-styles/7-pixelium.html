@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bulletin Board - Pixelium Style (Warm)</title>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --px-bit: 3px;
+    --bg: #d8ccb8;
+    --surface: #c8b8a0;
+    --card: #e4d8c4;
+    --text: #3a2818;
+    --text-muted: #8a7458;
+    --border: #a89878;
+    --accent: #c07838;
+    --accent-light: #d89048;
+    --red: #c04040;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #908070;
+    font-family: 'Silkscreen', monospace;
+    font-size: 12px;
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.4);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  /* Panel — warm mid-tone with layered pixel frame */
+  .panel {
+    width: 500px;
+    max-width: 95vw;
+    max-height: 90vh;
+    background: var(--card);
+    border: var(--px-bit) solid #6b5038;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 var(--px-bit) var(--surface),
+      0 0 0 calc(2 * var(--px-bit)) #6b5038,
+      inset 2px 2px 0 rgba(255,255,255,0.25),
+      inset -2px -2px 0 rgba(0,0,0,0.08);
+  }
+  .panel-title {
+    text-align: center;
+    font-size: 14px;
+    font-weight: bold;
+    margin-bottom: 14px;
+    color: #5a3820;
+    text-shadow: 1px 1px 0 rgba(255,255,255,0.35);
+  }
+  .section-label {
+    color: var(--accent);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+  .scroll-area {
+    flex: 1; overflow-y: auto; min-height: 0;
+    margin-bottom: 12px; max-height: 50vh;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) var(--bg);
+  }
+  .scroll-area::-webkit-scrollbar { width: 8px; }
+  .scroll-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 0; }
+  .scroll-area::-webkit-scrollbar-track { background: var(--bg); }
+  /* Announcements */
+  .ann-item {
+    background: var(--bg);
+    padding: 10px;
+    margin-bottom: 8px;
+    border: 2px solid var(--border);
+    border-left-width: var(--px-bit);
+    border-left-color: var(--accent);
+  }
+  .ann-text { color: var(--text); font-size: 11px; word-break: break-word; }
+  .ann-meta { color: var(--text-muted); font-size: 9px; margin-top: 4px; }
+  .divider {
+    height: 2px;
+    background: var(--border);
+    margin: 12px 0;
+  }
+  /* Notes — warm pastel sticky notes */
+  .notes-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .note-card {
+    padding: 10px;
+    font-size: 11px;
+    word-break: break-word;
+    border: 2px solid;
+    box-shadow: 2px 2px 0 rgba(0,0,0,0.1);
+  }
+  .note-card.color-yellow { background: #f8ecb0; border-color: #d8c060; }
+  .note-card.color-pink   { background: #f4c8cc; border-color: #d89898; }
+  .note-card.color-blue   { background: #bcd8ec; border-color: #88b0cc; }
+  .note-card.color-green  { background: #bce4bc; border-color: #80b880; }
+  .note-card.color-purple { background: #d4c4e0; border-color: #a890b8; }
+  .note-text { margin-bottom: 6px; color: var(--text); }
+  .note-meta { font-size: 9px; color: var(--text-muted); }
+  .note-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+  .note-like { font-size: 9px; color: var(--text-muted); cursor: pointer; }
+  .note-like.liked { color: var(--red); }
+  .note-delete { font-size: 9px; color: var(--border); cursor: pointer; }
+  /* Input */
+  .input-area { margin-bottom: 10px; }
+  .input-area textarea {
+    width: 100%;
+    background: #f0e8d8;
+    color: var(--text);
+    border: 2px solid var(--border);
+    padding: 10px;
+    font-family: 'Silkscreen', monospace;
+    font-size: 11px;
+    resize: none;
+    outline: none;
+    box-shadow: inset 1px 1px 2px rgba(0,0,0,0.06);
+  }
+  .input-area textarea:focus { border-color: var(--accent); }
+  .input-area textarea::placeholder { color: var(--text-muted); }
+  .counter { text-align: right; font-size: 9px; color: var(--text-muted); margin-top: 2px; }
+  /* Buttons */
+  .actions { display: flex; gap: 10px; }
+  .btn {
+    flex: 1;
+    padding: 10px 0;
+    font-family: 'Silkscreen', monospace;
+    font-size: 11px;
+    font-weight: bold;
+    cursor: pointer;
+    border: 2px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    border-radius: 0;
+    box-shadow: 2px 2px 0 rgba(0,0,0,0.12);
+    transition: all 0.15s;
+  }
+  .btn:hover { background: var(--surface); }
+  .btn:active { box-shadow: none; transform: translate(2px, 2px); }
+  .btn-primary {
+    background: var(--accent);
+    border-color: #905828;
+    color: #fff;
+    box-shadow: 2px 2px 0 #905828;
+  }
+  .btn-primary:hover { background: var(--accent-light); }
+  .btn-primary:active { box-shadow: none; transform: translate(2px, 2px); }
+</style>
+</head>
+<body>
+<div class="overlay">
+  <div class="panel">
+    <div class="panel-title">Bulletin Board</div>
+    <div class="scroll-area">
+      <div class="section-label">Announcements</div>
+      <div class="ann-item">
+        <div class="ann-text">Welcome to the cozy space! Feel free to leave a note.</div>
+        <div class="ann-meta">Admin - 2 hours ago</div>
+      </div>
+      <div class="divider"></div>
+      <div class="section-label">Notes</div>
+      <div class="notes-grid">
+        <div class="note-card color-yellow">
+          <div class="note-text">Having a great study session today!</div>
+          <div class="note-footer">
+            <span class="note-meta">Alice</span>
+            <span class="note-like liked">&#10084; 3</span>
+          </div>
+        </div>
+        <div class="note-card color-pink">
+          <div class="note-text">The cat is so cute~</div>
+          <div class="note-footer">
+            <span class="note-meta">Bob</span>
+            <span class="note-like">&#9825; 1</span>
+          </div>
+        </div>
+        <div class="note-card color-blue">
+          <div class="note-text">Focus mode activated!</div>
+          <div class="note-footer">
+            <span class="note-meta">Charlie</span>
+            <span class="note-like">&#9825; 0</span>
+          </div>
+        </div>
+        <div class="note-card color-green">
+          <div class="note-text">Good vibes only :)</div>
+          <div class="note-footer">
+            <span class="note-meta">Dana</span>
+            <span class="note-like liked">&#10084; 5</span>
+          </div>
+        </div>
+        <div class="note-card color-purple">
+          <div class="note-text">Anyone want to study together?</div>
+          <div class="note-footer">
+            <span class="note-meta">Eve</span>
+            <span class="note-like">&#9825; 2</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="input-area">
+      <textarea rows="2" placeholder="Leave a note..."></textarea>
+      <div class="counter">0/100</div>
+    </div>
+    <div class="actions">
+      <button class="btn">Close</button>
+      <button class="btn btn-primary">Post</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,703 @@
+/* ══════════════════════════════════════════════
+   WelcomePopup — Passport 方案
+   Step 1: 编辑页（复用原版布局）
+   Step 2: 证件展示页 + 盖章动画
+   ══════════════════════════════════════════════ */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--retro-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-popup);
+}
+
+/* ════════════════════════════════════════════════
+   STEP 1 — Edit Page (same layout as original)
+   ════════════════════════════════════════════════ */
+
+.inner {
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  border: var(--border-thin) solid var(--panel-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--pxl-bevel);
+  padding: var(--size-px-5);
+  width: 720px;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: var(--size-px-8);
+}
+
+.left {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-px-2-5);
+}
+
+.right {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-px-2-5);
+}
+
+/* Section headers — document-style */
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+  padding-bottom: 4px;
+  border-bottom: var(--border-thin) solid var(--retro-divider);
+}
+
+.sectionMark {
+  font-family: monospace;
+  font-size: var(--fs-xs);
+  color: var(--retro-primary);
+  opacity: 0.5;
+}
+
+.sectionTitle {
+  font-size: var(--fs-sm);
+  font-weight: normal;
+  margin: 0;
+  color: var(--retro-muted);
+  text-transform: uppercase;
+  letter-spacing: 3px;
+}
+
+/* Preview */
+.previewArea {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+
+.previewCanvas {
+  width: var(--size-px-8);
+  height: 96px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.dice {
+  position: absolute;
+  right: calc(50% + 40px);
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: var(--fs-lg);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity var(--duration-normal);
+  background: none;
+  border: none;
+}
+.dice:hover { opacity: 1; }
+
+/* Mode tabs */
+.modeTabs {
+  display: flex;
+  gap: var(--size-px-1);
+  max-width: calc(7 * 40px + 6 * 4px);
+}
+
+.modeTab {
+  flex: 1;
+  height: var(--size-px-7);
+  background: transparent;
+  color: var(--retro-muted);
+  border: var(--border-thin) solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--size-px-2-5);
+  font-size: var(--fs-sm);
+  font-weight: bold;
+  cursor: pointer;
+  transition: all var(--duration-normal);
+}
+.modeTab:hover { color: var(--retro-text); background: var(--retro-primary-8); }
+.modeTab:global(.active) {
+  color: var(--retro-primary);
+  border-color: var(--retro-primary-40);
+  background: var(--retro-primary-10);
+}
+
+/* Customizer area */
+.customizer {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.customizer::-webkit-scrollbar { display: none; }
+
+.presetsGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.custTabs {
+  display: flex;
+  gap: var(--size-px-1);
+  margin-bottom: var(--size-px-2);
+  max-width: calc(7 * 40px + 6 * 4px);
+}
+
+.ctab {
+  flex: 1;
+  background: var(--retro-surface);
+  color: var(--retro-muted);
+  border: var(--border-thin) solid var(--retro-divider);
+  border-radius: var(--radius-sm);
+  padding: var(--size-px-1) var(--size-px-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: all var(--duration-normal);
+  text-align: center;
+}
+.ctab:hover { color: var(--retro-text); border-color: var(--retro-primary); }
+.ctab:global(.active) { color: var(--retro-primary); border-color: var(--retro-primary); background: var(--retro-primary-15); }
+
+.custOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.custVariants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 28px;
+  margin-top: var(--size-px-2);
+}
+
+/* Fields */
+.fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-px-2-5);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-px-1);
+  text-align: left;
+}
+
+.fieldLabel {
+  font-size: var(--fs-sm);
+  color: var(--retro-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+}
+
+.tipToggle {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: var(--border-thin) solid var(--retro-muted);
+  background: none;
+  color: var(--retro-muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: help;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+  transition: opacity var(--duration-normal);
+}
+.tipToggle:hover { opacity: 1; }
+.tipToggle:hover::after,
+.tipToggle:focus::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  width: 280px;
+  font-size: var(--fs-xs);
+  color: var(--retro-text);
+  background: #1e2636;
+  border-radius: var(--radius-sm);
+  padding: var(--size-px-2) var(--size-px-2-5);
+  pointer-events: none;
+  z-index: 10;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  line-height: 1.4;
+}
+
+.langTags {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--size-px-2);
+}
+
+.langTags :global(button[aria-checked="false"]) span:first-child {
+  border-color: var(--retro-muted) !important;
+  background: var(--retro-surface) !important;
+}
+
+.fieldHint {
+  font-size: var(--fs-xs);
+  color: var(--retro-muted);
+  opacity: 0.7;
+  line-height: 1.4;
+}
+
+.inputWrap {
+  position: relative;
+}
+
+.inputError {
+  border-color: var(--retro-red) !important;
+  box-shadow: 0 0 0 1px var(--retro-red);
+}
+
+.inputWithCounter {
+  padding-right: 56px !important;
+}
+
+.counter {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: var(--fs-xs);
+  color: var(--retro-muted);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.birthMonthWrap :global([role="listbox"]) {
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--retro-border) transparent;
+}
+.birthMonthWrap :global([role="listbox"])::-webkit-scrollbar {
+  width: 6px;
+}
+.birthMonthWrap :global([role="listbox"])::-webkit-scrollbar-track {
+  background: transparent;
+}
+.birthMonthWrap :global([role="listbox"])::-webkit-scrollbar-thumb {
+  background: var(--retro-border);
+  border-radius: 3px;
+}
+.birthMonthWrap :global([role="listbox"])::-webkit-scrollbar-thumb:hover {
+  background: var(--retro-muted);
+}
+
+.tzDisplay {
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+  font-size: var(--fs-sm);
+  color: var(--retro-text);
+}
+
+.tzDot {
+  width: 8px !important;
+  height: 8px !important;
+  min-width: 8px !important;
+  min-height: 8px !important;
+  flex-shrink: 0;
+}
+
+/* Bottom */
+.rightBottom {
+  margin-top: auto;
+  padding-top: var(--size-px-5);
+  text-align: center;
+}
+
+.enterBtn {
+  display: block;
+  width: 100%;
+  background: var(--retro-primary) !important;
+  color: var(--retro-bg) !important;
+  border-color: var(--retro-primary-hover) !important;
+}
+.enterBtn:hover {
+  background: var(--retro-primary-hover) !important;
+}
+
+.bottomHint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--size-px-1);
+  margin-top: var(--size-px-2-5);
+}
+
+.authSep {
+  color: var(--retro-muted);
+  font-size: var(--fs-sm);
+  user-select: none;
+}
+
+
+/* ════════════════════════════════════════════════
+   STEP 2 — Card Page (passport display)
+   ════════════════════════════════════════════════ */
+
+.card {
+  position: relative;
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  border: var(--border-md) dashed var(--retro-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--pxl-bevel);
+  width: 720px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Watermark — repeating ⌂ pattern ── */
+.watermark {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  font-size: 24px;
+  line-height: 1.4;
+  color: var(--retro-text);
+  opacity: 0.025;
+  word-break: break-all;
+  letter-spacing: 8px;
+  transform: rotate(-15deg) scale(1.3);
+  transform-origin: center center;
+  z-index: 0;
+}
+
+/* Card header */
+.cardHeader {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+  padding: var(--size-px-2) var(--size-px-4);
+  background: var(--retro-surface);
+  border-bottom: var(--border-thin) solid var(--retro-divider);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+.headerIcon {
+  font-size: var(--fs-lg);
+  color: var(--retro-primary);
+}
+
+.headerTitle {
+  font-size: var(--fs-sm);
+  font-weight: normal;
+  margin: 0;
+  color: var(--retro-primary);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.docNo {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--retro-muted);
+  letter-spacing: 1px;
+  font-family: monospace;
+}
+
+.headerActions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+}
+
+/* Card body — photo + right content */
+.cardBody {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-3);
+  padding: var(--size-px-4);
+}
+
+.cardRight {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-px-3);
+}
+
+/* Bio area — right column */
+.cardBioArea {
+  flex: 1;
+  min-width: 0;
+}
+
+.cardBioText {
+  font-size: var(--fs-sm);
+  color: var(--retro-text);
+  line-height: 1.6;
+  word-break: break-word;
+  text-transform: none;
+}
+
+/* Photo frame — ~28% width like real passport */
+.photoFrame {
+  flex: 0 0 28%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 7 / 9;
+  border: var(--border-md) solid var(--retro-divider);
+  border-radius: var(--radius-sm);
+  background: var(--retro-surface);
+}
+
+.cardCanvas {
+  width: 80%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+/* Info fields (read-only) */
+.cardInfo {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-px-2);
+  margin: 0;
+  padding: 0;
+}
+
+.cardRow {
+  display: flex;
+  gap: var(--size-px-4);
+}
+
+.cardRow .cardField {
+  flex: 1;
+  min-width: 0;
+}
+
+.cardField {
+  text-align: left;
+}
+
+.cardFieldLabel {
+  font-size: var(--fs-xs);
+  color: var(--retro-muted);
+  letter-spacing: 1px;
+  margin-bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+}
+
+.cardFieldValue {
+  font-size: var(--fs-sm);
+  color: var(--retro-text);
+  text-transform: uppercase;
+  word-break: break-word;
+  margin: 0;
+  letter-spacing: 1px;
+}
+
+.cardBio {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.cardLangs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-px-1);
+  margin-top: var(--size-px-1);
+}
+
+.langBadge {
+  font-size: var(--fs-xs);
+  color: var(--retro-primary);
+  background: var(--retro-primary-10);
+  border: var(--border-thin) solid var(--retro-primary-30);
+  border-radius: var(--radius-sm);
+  padding: 4px 0;
+  min-width: 72px;
+  text-align: center;
+}
+
+/* ── Type tags ── */
+.typeTags {
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-1);
+}
+
+.typeTag {
+  font-size: var(--fs-sm);
+  color: var(--retro-muted);
+  text-transform: uppercase;
+  opacity: 0.4;
+}
+
+.typeTagActive {
+  color: var(--retro-primary);
+  opacity: 1;
+}
+
+.typeTagSep {
+  font-size: var(--fs-sm);
+  color: var(--retro-muted);
+  opacity: 0.3;
+}
+
+/* ── Signature ── */
+.signatureArea {
+  position: relative;
+  z-index: 1;
+  padding: 0 var(--size-px-4) var(--size-px-3);
+}
+
+.signatureLine {
+  border-bottom: var(--border-thin) solid var(--retro-divider);
+  padding-bottom: var(--size-px-1);
+  min-height: 24px;
+}
+
+.signatureText {
+  font-size: var(--fs-sm);
+  font-style: italic;
+  color: var(--retro-text);
+  opacity: 0.8;
+  letter-spacing: 1px;
+}
+
+/* ── Stamp ── */
+.stamp {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  width: 80px;
+  height: 80px;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(2.5) rotate(-20deg);
+  transition: none;
+}
+
+.stampLand {
+  animation: stampDown 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes stampDown {
+  0% {
+    opacity: 0;
+    transform: scale(2.5) rotate(-20deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(0.9) rotate(2deg);
+  }
+  70% {
+    transform: scale(1.05) rotate(-1deg);
+  }
+  100% {
+    opacity: 0.7;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+.stampInner {
+  width: 100%;
+  height: 100%;
+  border: 3px solid var(--retro-primary);
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.stampText {
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--retro-primary);
+  letter-spacing: 3px;
+  line-height: 1;
+}
+
+.stampSub {
+  font-size: 8px;
+  color: var(--retro-primary);
+  letter-spacing: 2px;
+  opacity: 0.8;
+  line-height: 1;
+}
+
+/* ── MRZ (Machine Readable Zone) ── */
+.mrz {
+  position: relative;
+  z-index: 1;
+  font-family: monospace;
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: var(--retro-muted);
+  opacity: 0.35;
+  padding: var(--size-px-2) 0;
+  margin: 0 var(--size-px-4);
+  border-top: var(--border-thin) solid var(--retro-divider);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+}
+
+
+/* ════════════════════════════════════════════════
+   Responsive
+   ════════════════════════════════════════════════ */
+
+@media (max-width: 600px) {
+  .inner { width: 340px; }
+  .body { flex-direction: column; gap: var(--size-px-2-5); }
+  .divider { width: auto; height: 1px; }
+  .card { width: 340px; }
+  .cardBody { flex-direction: column; align-items: stretch; gap: var(--size-px-3); }
+  .photoFrame { aspect-ratio: auto; height: 120px; }
+  .headerActions { gap: var(--size-px-1); }
+  .mrz { font-size: 7px; }
+}

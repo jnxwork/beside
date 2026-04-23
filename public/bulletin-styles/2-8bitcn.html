@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bulletin Board - 8bitcn Style</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #0a0a0a;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 12px;
+    color: #e8e8e8;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  /* 8bitcn signature: pixel border via box-shadow on 4 edges + corner squares */
+  .pixel-border {
+    position: relative;
+    border: none;
+    box-shadow:
+      -4px 0 0 0 #e8e8e8,
+       4px 0 0 0 #e8e8e8,
+       0 -4px 0 0 #e8e8e8,
+       0  4px 0 0 #e8e8e8;
+    margin: 4px;
+  }
+  .pixel-border-accent {
+    box-shadow:
+      -4px 0 0 0 #f0f0f0,
+       4px 0 0 0 #f0f0f0,
+       0 -4px 0 0 #f0f0f0,
+       0  4px 0 0 #f0f0f0;
+  }
+  /* Panel */
+  .panel {
+    width: 500px;
+    max-width: 95vw;
+    max-height: 90vh;
+    background: #1a1a1a;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-title {
+    text-align: center;
+    font-size: 14px;
+    font-weight: bold;
+    margin-bottom: 14px;
+    color: #fff;
+  }
+  .section-label {
+    color: #888;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+  .scroll-area {
+    flex: 1; overflow-y: auto; min-height: 0;
+    margin-bottom: 12px; max-height: 50vh;
+  }
+  .scroll-area::-webkit-scrollbar { width: 8px; }
+  .scroll-area::-webkit-scrollbar-thumb { background: #333; }
+  .scroll-area::-webkit-scrollbar-track { background: #111; }
+  /* Announcements */
+  .ann-item {
+    background: #222;
+    padding: 10px;
+    margin-bottom: 8px;
+    border-top: 4px solid #e8e8e8;
+    border-bottom: 4px solid #e8e8e8;
+  }
+  .ann-text { color: #e8e8e8; font-size: 10px; word-break: break-word; }
+  .ann-meta { color: #666; font-size: 8px; margin-top: 4px; }
+  .divider {
+    border: none;
+    border-top: 2px dashed #333;
+    margin: 12px 0;
+  }
+  /* Notes */
+  .notes-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  .note-card {
+    padding: 10px;
+    font-size: 10px;
+    word-break: break-word;
+    background: #222;
+    border-top: 4px solid #e8e8e8;
+    border-bottom: 4px solid #e8e8e8;
+    margin: 4px;
+  }
+  .note-card.color-yellow { border-color: #ffeb3b; background: #1a1800; }
+  .note-card.color-pink   { border-color: #ec407a; background: #1a0810; }
+  .note-card.color-blue   { border-color: #42a5f5; background: #081018; }
+  .note-card.color-green  { border-color: #66bb6a; background: #081808; }
+  .note-card.color-purple { border-color: #ab47bc; background: #180820; }
+  .note-text { margin-bottom: 6px; color: #e8e8e8; }
+  .note-meta { font-size: 8px; color: #888; }
+  .note-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+  .note-like { font-size: 8px; color: #666; cursor: pointer; }
+  .note-like.liked { color: #ec407a; }
+  .note-delete { font-size: 8px; color: #444; cursor: pointer; }
+  /* Input */
+  .input-area { margin-bottom: 10px; }
+  .input-area textarea {
+    width: 100%;
+    background: #111;
+    color: #e8e8e8;
+    border: none;
+    border-top: 4px solid #e8e8e8;
+    border-bottom: 4px solid #e8e8e8;
+    padding: 10px;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 10px;
+    resize: none;
+    outline: none;
+    margin: 4px 0;
+  }
+  .input-area textarea::placeholder { color: #444; }
+  .counter { text-align: right; font-size: 8px; color: #444; }
+  /* Buttons */
+  .actions { display: flex; gap: 10px; }
+  .btn {
+    flex: 1;
+    padding: 10px 0;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 10px;
+    font-weight: bold;
+    cursor: pointer;
+    border: none;
+    background: #333;
+    color: #e8e8e8;
+    border-top: 4px solid #e8e8e8;
+    border-bottom: 4px solid #e8e8e8;
+    margin: 4px;
+    transition: transform 0.1s;
+  }
+  .btn:active { transform: translateY(3px); }
+  .btn-primary { background: #e8e8e8; color: #0a0a0a; }
+  .btn-primary:hover { background: #ccc; }
+  .empty-msg { text-align: center; color: #444; font-size: 10px; padding: 20px 0; }
+</style>
+</head>
+<body>
+<div class="overlay">
+  <div class="panel pixel-border">
+    <div class="panel-title">Bulletin Board</div>
+    <div class="scroll-area">
+      <div class="section-label">Announcements</div>
+      <div class="ann-item">
+        <div class="ann-text">Welcome to the cozy space! Feel free to leave a note.</div>
+        <div class="ann-meta">Admin - 2 hours ago</div>
+      </div>
+      <hr class="divider">
+      <div class="section-label">Notes</div>
+      <div class="notes-grid">
+        <div class="note-card color-yellow">
+          <div class="note-text">Having a great study session today!</div>
+          <div class="note-footer">
+            <span class="note-meta">Alice</span>
+            <span class="note-like liked">&#10084; 3</span>
+          </div>
+        </div>
+        <div class="note-card color-pink">
+          <div class="note-text">The cat is so cute~</div>
+          <div class="note-footer">
+            <span class="note-meta">Bob</span>
+            <span class="note-like">&#9825; 1</span>
+          </div>
+        </div>
+        <div class="note-card color-blue">
+          <div class="note-text">Focus mode activated!</div>
+          <div class="note-footer">
+            <span class="note-meta">Charlie</span>
+            <span class="note-like">&#9825; 0</span>
+          </div>
+        </div>
+        <div class="note-card color-green">
+          <div class="note-text">Good vibes only :)</div>
+          <div class="note-footer">
+            <span class="note-meta">Dana</span>
+            <span class="note-like liked">&#10084; 5</span>
+          </div>
+        </div>
+        <div class="note-card color-purple">
+          <div class="note-text">Anyone want to study together?</div>
+          <div class="note-footer">
+            <span class="note-meta">Eve</span>
+            <span class="note-like">&#9825; 2</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <hr class="divider">
+    <div class="input-area">
+      <textarea rows="2" placeholder="Leave a note..."></textarea>
+      <div class="counter">0/100</div>
+    </div>
+    <div class="actions">
+      <button class="btn">Close</button>
+      <button class="btn btn-primary">Post</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

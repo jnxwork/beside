@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bulletin Board - SNES.css Style (Warm)</title>
+<link rel="stylesheet" href="https://unpkg.com/snes.css@1.0.1/dist/snes.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #a09080;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 11px;
+    color: #3a2818;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.45);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  /* Panel — warm cream with SNES pixel border */
+  .panel {
+    width: 500px;
+    max-width: 95vw;
+    max-height: 90vh;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #f2e8d8;
+  }
+  /* Override SNES container colors */
+  .snes-container.panel {
+    color: #3a2818;
+  }
+  .panel-title {
+    text-align: center;
+    font-size: 14px;
+    margin-bottom: 14px;
+    color: #6b4828;
+    text-shadow: 1px 1px 0 rgba(255,255,255,0.4);
+  }
+  .section-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+    color: #907860;
+  }
+  .scroll-area {
+    flex: 1; overflow-y: auto; min-height: 0;
+    margin-bottom: 12px; max-height: 50vh;
+  }
+  .scroll-area::-webkit-scrollbar { width: 6px; }
+  .scroll-area::-webkit-scrollbar-thumb { background: #b8a488; border-radius: 0; }
+  .scroll-area::-webkit-scrollbar-track { background: #e0d4c0; }
+  /* Announcements */
+  .ann-item {
+    padding: 10px;
+    margin-bottom: 8px;
+    border-left: 3px solid #d4943c;
+    background: rgba(212,148,60,0.08);
+  }
+  .ann-text { font-size: 10px; word-break: break-word; color: #3a2818; }
+  .ann-meta { color: #907860; font-size: 8px; margin-top: 4px; }
+  .divider {
+    height: 2px;
+    background: linear-gradient(90deg, #d8c8b0, #c8a880, #d8c8b0);
+    margin: 12px 0;
+  }
+  /* Notes — bright cheerful pastel sticky notes */
+  .notes-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .note-card {
+    padding: 10px;
+    font-size: 10px;
+    word-break: break-word;
+    color: #3a2818;
+  }
+  .note-card.color-yellow { background: #fff4b8; border-color: #e8c040; }
+  .note-card.color-pink   { background: #ffd0d8; border-color: #e890a0; }
+  .note-card.color-blue   { background: #c8e0f8; border-color: #80b0e0; }
+  .note-card.color-green  { background: #c8f0c8; border-color: #70c070; }
+  .note-card.color-purple { background: #e0d0f0; border-color: #a888c8; }
+  .note-text { margin-bottom: 6px; }
+  .note-meta { font-size: 8px; color: #907860; }
+  .note-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+  .note-like { font-size: 8px; color: #907860; cursor: pointer; }
+  .note-like.liked { color: #cc4040; }
+  .note-delete { font-size: 8px; color: #b8a088; cursor: pointer; }
+  /* Input */
+  .input-area { margin-bottom: 10px; }
+  .input-area textarea {
+    width: 100%;
+    background: #fff;
+    color: #3a2818;
+    border: 2px solid #c8b8a0;
+    padding: 10px;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 10px;
+    resize: none;
+    outline: none;
+  }
+  .input-area textarea:focus { border-color: #d4943c; }
+  .input-area textarea::placeholder { color: #b8a088; }
+  .counter { text-align: right; font-size: 8px; color: #b8a088; margin-top: 2px; }
+  /* Buttons */
+  .actions { display: flex; gap: 10px; }
+  .actions .snes-button {
+    flex: 1;
+    font-size: 10px;
+    font-family: 'Press Start 2P', monospace;
+    padding: 10px 0;
+    text-align: center;
+  }
+  /* Warm button overrides */
+  .snes-button.btn-close {
+    background: #e0d4c0;
+    color: #6b5840;
+  }
+  .snes-button.btn-post {
+    background: #d4943c;
+    color: #fff;
+  }
+</style>
+</head>
+<body>
+<div class="overlay">
+  <div class="snes-container panel">
+    <div class="panel-title">Bulletin Board</div>
+    <div class="scroll-area">
+      <div class="section-label">Announcements</div>
+      <div class="ann-item">
+        <div class="ann-text">Welcome to the cozy space! Feel free to leave a note.</div>
+        <div class="ann-meta">Admin - 2 hours ago</div>
+      </div>
+      <div class="divider"></div>
+      <div class="section-label">Notes</div>
+      <div class="notes-grid">
+        <div class="snes-container note-card color-yellow">
+          <div class="note-text">Having a great study session today!</div>
+          <div class="note-footer">
+            <span class="note-meta">Alice</span>
+            <span class="note-like liked">&#10084; 3</span>
+          </div>
+        </div>
+        <div class="snes-container note-card color-pink">
+          <div class="note-text">The cat is so cute~</div>
+          <div class="note-footer">
+            <span class="note-meta">Bob</span>
+            <span class="note-like">&#9825; 1</span>
+          </div>
+        </div>
+        <div class="snes-container note-card color-blue">
+          <div class="note-text">Focus mode activated!</div>
+          <div class="note-footer">
+            <span class="note-meta">Charlie</span>
+            <span class="note-like">&#9825; 0</span>
+          </div>
+        </div>
+        <div class="snes-container note-card color-green">
+          <div class="note-text">Good vibes only :)</div>
+          <div class="note-footer">
+            <span class="note-meta">Dana</span>
+            <span class="note-like liked">&#10084; 5</span>
+          </div>
+        </div>
+        <div class="snes-container note-card color-purple">
+          <div class="note-text">Anyone want to study together?</div>
+          <div class="note-footer">
+            <span class="note-meta">Eve</span>
+            <span class="note-like">&#9825; 2</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="input-area">
+      <textarea rows="2" placeholder="Leave a note..."></textarea>
+      <div class="counter">0/100</div>
+    </div>
+    <div class="actions">
+      <button class="snes-button btn-close">Close</button>
+      <button class="snes-button btn-post">Post</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,3 @@
+/* Wrap pxlkit styles + tell Tailwind to scan pxlkit dist for class names */
+@import "@pxlkit/ui-kit/styles.css";
+@source "../node_modules/@pxlkit/ui-kit/dist";

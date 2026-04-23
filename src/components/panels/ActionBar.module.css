@@ -1,0 +1,66 @@
+.bar {
+  position: absolute;
+  bottom: var(--size-px-2);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: var(--size-px-2);
+  padding: var(--size-px-1) var(--size-px-2-5);
+  align-items: center;
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  border: var(--border-md) solid var(--retro-secondary);
+  border-radius: var(--radius-md);
+  z-index: var(--z-panel);
+}
+
+.bar > label {
+  flex-shrink: 0;
+}
+
+/* PixelSelect: remove combobox border, flip dropdown upward, match bar width */
+.bar :global(button[role="combobox"]) {
+  border: none;
+  background: transparent;
+}
+
+.bar :global([role="listbox"]) {
+  top: auto;
+  bottom: 100%;
+  margin-top: 0;
+  margin-bottom: 4px;
+  width: max-content;
+  min-width: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.timerDisplay {
+  color: var(--retro-primary);
+  font-size: var(--fs-md);
+  font-weight: bold;
+  display: flex;
+  gap: var(--size-px-2);
+  align-items: center;
+}
+
+.taskLabel {
+  color: var(--retro-text);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeValue {
+  color: var(--retro-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 600px) {
+  .bar button {
+    font-size: var(--fs-md);
+    padding: var(--size-px-1) var(--size-px-2-5);
+    min-height: 44px;
+  }
+}

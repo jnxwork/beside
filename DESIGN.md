@@ -7,33 +7,55 @@
 ## 1. 设计系统基础
 
 ### 间距规则
-- 所有 padding / margin / gap 必须是 **4 或 8 的倍数**
-- 常用值: 4, 8, 12, 16, 20, 24, 32, 40, 48
+- 使用 Open Props 间距阶梯：`--size-px-1` (4px), `--size-px-2` (8px), `--size-px-2-5` (12px 桥接值), `--size-px-3` (16px), `--size-px-4` (20px), `--size-px-5` (24px), `--size-px-7` (32px), `--size-px-8` (48px), `--size-px-9` (64px)
+- 2px 保留用于结构性间距（gap: 2px）
+- 收敛规则：3→4, 5→4, 6→8, 10→8或12
 
 ### 字号规则
-- 最小字号 **14px**，无例外
+- 像素字体最小 **12px**（密集数据如热力图、时间标签）
+- 一般 UI 最小 **14px**
+- 使用 token：`--fs-xs: 12px`, `--fs-sm: 14px`, `--fs-md: 16px`, `--fs-lg: 20px`, `--fs-xl: 22px`, `--fs-2xl: 32px`, `--fs-3xl: 48px`
 - 游戏内文字(Canvas)不受此限制，但标签文字应清晰可读
 
-### 配色体系
+### 配色体系 — 晨雾蓝灰 (Morning Mist)
 
-| 用途 | 值 |
-|------|------|
-| 页面背景 | `#2a2838` |
-| 面板背景 | `rgba(22,33,62,0.94)` |
-| 面板边框 | 无（不加 border） |
-| 边框色(分割线等) | `#0f3460` |
-| 强调色 | `#f5a623` |
-| 玩家名(卡片) | `#4DA6FF` |
-| 专注标签色 | `#f5a623` |
+| 用途 | Token | 值 |
+|------|-------|------|
+| body 外层 | `--retro-body-bg` | `#242e3c` |
+| 基底背景 | `--retro-bg` | `#2e3a4a` |
+| 面板背景 | `--panel-bg` | `rgba(42,50,66,0.88)` + `backdrop-filter: blur(6px)` |
+| 面板边框 | `--panel-border` | `rgba(255,255,255,0.06)` |
+| 表面色 | `--retro-surface` | `#354050` |
+| 卡片色 | `--retro-card` | `#3c4860` |
+| 主文本 | `--retro-text` | `#e4e0d8`（暖白） |
+| 次要文本 | `--retro-muted` | `#b0b8c4` |
+| 更弱文本 | `--retro-muted-light` | `#a0b0c0` |
+| 强调色(雾蓝) | `--retro-primary` | `#88c0d6` |
+| 强调色悬停 | `--retro-primary-hover` | `#78b0c6` |
+| 次要操作 | `--retro-secondary` | `#6a7a90` |
+| 边框 | `--retro-border` | `#4a5a6e` |
+| 分割线 | `--retro-divider` | `#404e60` |
+| 输入框底色 | `--retro-input-bg` | `#2a3544` |
+| 红色 | `--retro-red` | `#e48888` |
+| 绿色 | `--retro-green` | `#88c0d6` |
+| 紫色 | `--retro-purple` | `#b0a0c8` |
+| 系统色 | `--retro-system` | `#b0b0b0` |
+| 附近提示 | `--retro-nearby` | `#88c498` |
+| 玩家名(卡片) | `--name-others` | `#4DA6FF` |
 
 ### CSS 变量
 
 ```css
 --ui-icon-frame-size: 40px;
 --ui-icon-inner-size: 24px;
---ui-icon-radius: 10px;
+--ui-icon-radius: 0;
 --ui-emoji-min-size: 24px;
 --ui-online-emoji-size: 20px;
+--border-thin: 1px;
+--border-md: 2px;
+--radius-sm: 4px;
+--radius-md: 8px;
+--radius-lg: 12px;
 ```
 
 ### 字体栈
@@ -507,10 +529,10 @@ Canvas 使用 `imageSmoothingEnabled = false`，保持像素锐利。
 | 房间标签 | room-label | 10 |
 
 ### 面板样式规范
-- 背景: `rgba(22,33,62,0.94)`
-- 圆角: `16px` (主面板), `12px` (按钮/输入框)
-- 无边框 (不加 `border`)
-- 阴影: 可选, `box-shadow` 用于悬浮层
+- 背景: `var(--panel-bg)` = `rgba(42,50,66,0.88)` + `backdrop-filter: blur(6px)`
+- 边框: `var(--border-thin) solid var(--panel-border)` = `1px solid rgba(255,255,255,0.06)`
+- 圆角: `var(--radius-md)` = `8px`
+- 阴影: 可选, `box-shadow: var(--pxl-bevel)` 用于悬浮层
 
 ### 表情反应
 

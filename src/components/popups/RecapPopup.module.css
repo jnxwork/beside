@@ -1,0 +1,55 @@
+.dateRange {
+  text-align: center;
+  color: var(--retro-muted);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--size-px-2);
+}
+
+.loginHint {
+  text-align: center;
+  color: var(--retro-muted);
+  font-size: var(--fs-xs);
+  margin-bottom: var(--size-px-2);
+  opacity: 0.8;
+}
+
+.body { padding: var(--size-px-1) 0; }
+.dl { margin: 0; padding: 0; }
+.rowValue { margin: 0; }
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--size-px-2) var(--size-px-1);
+  border-bottom: var(--border-thin) solid var(--retro-divider);
+  font-size: var(--fs-sm);
+}
+.row:last-child { border-bottom: none; }
+.rowLabel { color: var(--retro-text); }
+.rowValue { color: var(--retro-primary); font-weight: bold; }
+
+.noData {
+  color: var(--retro-muted);
+  font-size: var(--fs-sm);
+  text-align: center;
+  padding: var(--size-px-4) 0;
+}
+
+.loginPrompt {
+  text-align: center;
+  padding: var(--size-px-4) 0;
+}
+
+.promptText {
+  color: var(--retro-text);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.actions {
+  display: flex;
+  gap: var(--size-px-2);
+  justify-content: center;
+  margin-top: var(--size-px-2-5);
+}

@@ -3,6 +3,85 @@
 // Two rooms: Focus Zone (quiet) & Lounge (chat + music)
 // ============================================================
 
+// --- React UI Bridge ---
+// React now manages all DOM UI. This shim prevents crashes when
+// game.js references old DOM elements that no longer exist.
+// Returns a Proxy-based "null element" that silently absorbs any
+// property access, method call, or DOM manipulation.
+(function() {
+  const _origById = document.getElementById.bind(document);
+  const _origQS  = document.querySelector.bind(document);
+  const REAL_IDS = new Set([
+    "game", "game-container", "joystick-zone", "joystick-canvas", "ui-root",
+    // Welcome customizer — React provides these; return null when unmounted
+    "welcome-preview-canvas", "welcome-tabs", "welcome-presets",
+    "welcome-options", "welcome-variants", "welcome-dice",
+    "welcome-mode-preset", "welcome-mode-custom",
+    // React profile icon — return null when unmounted to avoid proxy canvas
+    "profile-icon-react",
+    // Settings panel — React manages these; return null so game.js skips old DOM listeners
+    "settings-panel", "settings-icon", "settings-detail", "profile-trigger",
+  ]);
+
+  // A "null canvas context" that absorbs all 2d drawing calls
+  function makeNullCtx() {
+    return new Proxy({}, {
+      get(t, p) {
+        if (p === "canvas") return makeNullEl();
+        if (typeof p === "symbol") return undefined;
+        return function() { return makeNullCtx(); };
+      },
+      set() { return true; }
+    });
+  }
+
+  // A "null element" that absorbs any DOM operation
+  function makeNullEl() {
+    const div = document.createElement("div");
+    return new Proxy(div, {
+      get(target, prop) {
+        if (prop === "getContext") return () => makeNullCtx();
+        if (prop === "querySelectorAll") return () => [];
+        if (prop === "querySelector") return () => makeNullEl();
+        if (prop === "children") return [];
+        if (prop === "childNodes") return [];
+        if (prop === "parentElement" || prop === "parentNode") return null;
+        if (prop === "offsetWidth" || prop === "offsetHeight") return 0;
+        if (prop === "getBoundingClientRect") return () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 });
+        // Form element defaults
+        if (prop === "value" || prop === "placeholder" || prop === "textContent" || prop === "innerHTML" || prop === "innerText") return target[prop] || "";
+        if (prop === "selectedIndex") return -1;
+        if (prop === "options") return [];
+        if (prop === "checked") return false;
+        if (prop === "files") return [];
+        // Delegate to the real div for common props (style, classList, dataset, etc.)
+        const val = target[prop];
+        if (typeof val === "function") return val.bind(target);
+        return val;
+      },
+      set(target, prop, value) {
+        target[prop] = value;
+        return true;
+      }
+    });
+  }
+
+  document.getElementById = function(id) {
+    const el = _origById(id);
+    if (el) return el;
+    if (REAL_IDS.has(id)) return null;
+    return makeNullEl();
+  };
+  document.querySelector = function(sel) {
+    return _origQS(sel) || makeNullEl();
+  };
+})();
+
+// --- React store bridge helper ---
+function storeSet(name, action, ...args) {
+  if (window.__stores?.[name]) window.__stores[name].getState()[action](...args);
+}
+
 const canvas = document.getElementById("game");
 let ctx = canvas.getContext("2d");
 const mainCtx = ctx;
@@ -15,8 +94,37 @@ function getSessionToken() {
 
 // Auth state
 let authToken = localStorage.getItem("authToken") || null;
-let authUsername = localStorage.getItem("authUsername") || null;
-let isRegistered = !!authToken;
+let authEmail = localStorage.getItem("authEmail") || null;
+let isRegistered = false;
+let myUserId = null;
+
+// Follow/favorite state
+let followedUsersArr = JSON.parse(localStorage.getItem("followedUsers") || "[]");
+let followedUsersSet = new Set(followedUsersArr);
+function isFollowed(userId) { return followedUsersSet.has(userId); }
+function toggleFollow(followKey) {
+  if (followedUsersSet.has(followKey)) followedUsersSet.delete(followKey);
+  else followedUsersSet.add(followKey);
+  localStorage.setItem("followedUsers", JSON.stringify([...followedUsersSet]));
+  // Sync _followed flag to React store
+  const followed = isFollowed(followKey);
+  for (const id in otherPlayers) {
+    const p = otherPlayers[id];
+    if ((p._userId && p._userId === followKey) || id === followKey) {
+      storeSet("game", "updatePlayer", id, { _followed: followed });
+      break;
+    }
+  }
+}
+
+// Show names filter
+let showNamesFilter = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem("showNames"));
+    if (v && typeof v === "object") return { self: !!v.self, followed: !!v.followed, others: !!v.others };
+  } catch {}
+  return { self: true, followed: true, others: true };
+})();
 
 function buildSocketAuth() {
   const auth = { sessionToken: getSessionToken() };
@@ -27,8 +135,10 @@ function buildSocketAuth() {
 let socket = io({ auth: buildSocketAuth() });
 
 // Auth API helpers
-async function apiRegister(username, password, profileData) {
-  const body = { username, password, ...profileData };
+async function apiRegister(email, password, profileData) {
+  const body = { email, password, ...profileData };
+  // Include current authToken so server can upgrade guest → registered
+  if (authToken) body.authToken = authToken;
   const res = await fetch("/api/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -37,11 +147,11 @@ async function apiRegister(username, password, profileData) {
   return res.json().then(data => ({ ok: res.ok, status: res.status, ...data }));
 }
 
-async function apiLogin(username, password) {
+async function apiLogin(email, password) {
   const res = await fetch("/api/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email, password }),
   });
   return res.json().then(data => ({ ok: res.ok, status: res.status, ...data }));
 }
@@ -55,12 +165,13 @@ async function apiLogout() {
   }).catch(() => {});
 }
 
-function handleAuthSuccess(token, username, profile) {
+function handleAuthSuccess(token, email, profile, focusRecords) {
   authToken = token;
-  authUsername = username;
+  authEmail = email;
   isRegistered = true;
   localStorage.setItem("authToken", token);
-  localStorage.setItem("authUsername", username);
+  localStorage.setItem("authEmail", email);
+  storeSet("auth", "login", token, email);
   // Apply profile from server if provided
   if (profile) {
     if (profile.name) {
@@ -80,21 +191,41 @@ function handleAuthSuccess(token, username, profile) {
       if (localPlayer) localPlayer.languages = profile.languages;
       localStorage.setItem("playerLanguages", JSON.stringify(profile.languages));
     }
+    if (profile.createdAt) {
+      localStorage.setItem("accountCreatedAt", String(profile.createdAt));
+    }
+  }
+  // Merge focus records from server
+  if (focusRecords && focusRecords.length > 0) {
+    mergeFocusRecords(focusRecords);
   }
   // Reconnect socket with authToken
   socket.auth = buildSocketAuth();
   socket.disconnect().connect();
-  updateAuthUI();
+}
+
+function mergeFocusRecords(serverRecords) {
+  const local = JSON.parse(localStorage.getItem("focusHistory") || "[]");
+  const existing = new Set(local.map(r => `${r.startTime}_${r.duration}`));
+  let merged = [...local];
+  for (const r of serverRecords) {
+    if (!existing.has(`${r.startTime}_${r.duration}`)) {
+      merged.push(r);
+    }
+  }
+  merged.sort((a, b) => a.endTime - b.endTime);
+  if (merged.length > 100) merged = merged.slice(-100);
+  localStorage.setItem("focusHistory", JSON.stringify(merged));
 }
 
 function handleLogout() {
   apiLogout();
   authToken = null;
-  authUsername = null;
+  authEmail = null;
   isRegistered = false;
   localStorage.removeItem("authToken");
-  localStorage.removeItem("authUsername");
-  updateAuthUI();
+  localStorage.removeItem("authEmail");
+  storeSet("auth", "logout");
 }
 
 // --- Loading state ---
@@ -107,8 +238,18 @@ const _loadingTimeout = setTimeout(() => {
 if (_loadingRetryBtn) _loadingRetryBtn.addEventListener("click", () => location.reload());
 
 function dismissLoadingOverlay() {
-  if (!_loadingOverlay) return;
   clearTimeout(_loadingTimeout);
+  // React UI bridge: dismiss React loading overlay
+  // Use retry in case module scripts haven't executed yet
+  function tryDismissReact() {
+    if (window.__stores?.ui) {
+      window.__stores.ui.getState().setLoading(false);
+    } else {
+      setTimeout(tryDismissReact, 50);
+    }
+  }
+  tryDismissReact();
+  if (!_loadingOverlay) return;
   _loadingOverlay.classList.add("fade-out");
   setTimeout(() => _loadingOverlay.classList.add("hidden"), 500);
 }
@@ -200,6 +341,15 @@ function screenToGame(clientX, clientY) {
   };
 }
 
+// Convert game coords to CSS viewport coords (inverse of screenToGame)
+function gameToScreen(gameX, gameY) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (gameX - cameraX) * gameScale + rect.left,
+    y: (gameY - cameraY) * gameScale + rect.top,
+  };
+}
+
 // ============================================================
 // I18N
 // ============================================================
@@ -269,25 +419,28 @@ const TRANSLATIONS = {
     historyTitle: "Focus History",
     historyToday: "Today",
     historySessions: "sessions",
-    historyLast7Days: "Last 7 Days",
     historyRecentSessions: "Recent Sessions",
     historyNoData: "No focus sessions yet",
     historyClose: "Close",
     historyMin: "min",
     historyH: "h",
+    historyWeekdays: "M|T|W|T|F|S|S",
+    historyCategories: "Categories",
+    historyMonthSummary: "Focused {0} days, total {1}",
     reacted: "sent you",
     reactedTo: "You sent",
     reactedToSuffix: "",
     chooseCharacter: "Choose your look",
     sit: "Sit",
     stand: "Stand",
-    taglinePlaceholder: "",
+    taglinePlaceholder: "A short bio...",
     displayedNameLabel: "Displayed Name",
     taglineLabel: "Bio (optional)",
     profileTab: "Profile",
     systemTab: "Settings",
     profileEntry: "Edit Profile",
     langLabel: "Language",
+    iSpeakLabel: "I speak",
     profileLangLabel: "Language",
     uiLangLabel: "Interface Language",
     timezoneLabel: "Timezone",
@@ -321,6 +474,7 @@ const TRANSLATIONS = {
     miniShowMap: "Map",
     selectPlayer: "Who do you want to interact with?",
     clickToInteract: "Click to interact",
+    screenshot: "Screenshot",
     recStart: "Record timelapse",
     recStop: "Stop recording",
     recEncoding: "Encoding {0}%...",
@@ -328,19 +482,45 @@ const TRANSLATIONS = {
     authLogin: "Login",
     authRegister: "Register",
     authLogout: "Logout",
-    authUsername: "Username",
+    authEmail: "Email",
     authPassword: "Password",
     authSubmit: "Submit",
     authBack: "Back",
     authOr: "or",
     authGuest: "Enter as Guest",
     authLoggedInAs: "Logged in as",
-    authErrRequired: "Username and password required.",
-    authErrShortUser: "Username must be 3-20 characters (letters, numbers, underscore).",
+    authErrRequired: "Email and password required.",
+    authErrInvalidEmail: "Please enter a valid email address.",
     authErrShortPass: "Password must be at least 6 characters.",
     authErrNetwork: "Network error. Please try again.",
     chatRateLimit: "Just a moment",
     reactionRateLimit: "Your wave was sent!",
+    recapTitle: "Last Week",
+    recapOnline: "Time Online",
+    recapReactions: "Waves Received",
+    recapCatGifts: "Gifts from Cat",
+    recapTopPartner: "Hung Out Most With",
+    recapHours: "h",
+    recapNoData: "No data yet this week",
+    recapClose: "Close",
+    recapSharedHours: "shared",
+    shareCard: "Share Card",
+    focusRecap: "FOCUS RECAP",
+    shareCardNoData: "No focus data this week",
+    bulletinTitle: "Bulletin Board",
+    bulletinAnnouncements: "Announcements",
+    bulletinNotes: "Notes",
+    bulletinPlaceholder: "Leave a note...",
+    bulletinPost: "Post",
+    bulletinLoginRequired: "Login to post",
+    bulletinLoginToPost: "Login to Post",
+    bulletinCooldown: "Wait a moment",
+    bulletinEmpty: "No notes yet",
+    bulletinNoAnn: "No announcements",
+    bulletinClose: "Close",
+    follow: "Follow",
+    unfollow: "Unfollow",
+    followRequiresRegistration: "Only registered users can be followed",
   },
   zh: {
     focusZone: "\u4E13\u6CE8\u533A",
@@ -406,25 +586,28 @@ const TRANSLATIONS = {
     historyTitle: "\u4E13\u6CE8\u8BB0\u5F55",
     historyToday: "\u4ECA\u5929",
     historySessions: "\u6B21",
-    historyLast7Days: "\u8FD1 7 \u5929",
     historyRecentSessions: "\u6700\u8FD1\u8BB0\u5F55",
     historyNoData: "\u8FD8\u6CA1\u6709\u4E13\u6CE8\u8BB0\u5F55",
     historyClose: "\u5173\u95ED",
     historyMin: "\u5206\u949F",
     historyH: "\u5C0F\u65F6",
+    historyWeekdays: "\u4E00|\u4E8C|\u4E09|\u56DB|\u4E94|\u516D|\u65E5",
+    historyCategories: "\u7C7B\u522B\u5206\u5E03",
+    historyMonthSummary: "\u4E13\u6CE8\u4E86 {0} \u5929\uFF0C\u5171 {1}",
     reacted: "\u5BF9\u4F60\u53D1\u9001\u4E86",
     reactedTo: "\u4F60\u5BF9",
     reactedToSuffix: "\u53D1\u9001\u4E86",
     chooseCharacter: "\u9009\u62E9\u89D2\u8272",
     sit: "\u5750\u4E0B",
     stand: "\u8D77\u6765",
-    taglinePlaceholder: "",
+    taglinePlaceholder: "\u4E00\u53E5\u8BDD\u4ECB\u7ECD\u81EA\u5DF1...",
     displayedNameLabel: "\u663E\u793A\u540D\u79F0",
     taglineLabel: "\u7B80\u4ECB\uFF08\u9009\u586B\uFF09",
     profileTab: "\u8D44\u6599",
     systemTab: "\u8BBE\u7F6E",
     profileEntry: "\u7F16\u8F91\u8D44\u6599",
     langLabel: "\u8BED\u8A00",
+    iSpeakLabel: "\u6211\u8BF4",
     profileLangLabel: "\u8BED\u8A00",
     uiLangLabel: "\u754C\u9762\u8BED\u8A00",
     timezoneLabel: "\u65F6\u533A",
@@ -458,6 +641,7 @@ const TRANSLATIONS = {
     miniShowMap: "\u5730\u56FE",
     selectPlayer: "\u4F60\u60F3\u548C\u8C01\u4E92\u52A8\uFF1F",
     clickToInteract: "\u70B9\u51FB\u4E92\u52A8",
+    screenshot: "\u622A\u56FE",
     recStart: "\u5F55\u5236\u7F29\u65F6",
     recStop: "\u505C\u6B62\u5F55\u5236",
     recEncoding: "\u7F16\u7801\u4E2D {0}%...",
@@ -465,19 +649,45 @@ const TRANSLATIONS = {
     authLogin: "\u767B\u5F55",
     authRegister: "\u6CE8\u518C",
     authLogout: "\u9000\u51FA",
-    authUsername: "\u7528\u6237\u540D",
+    authEmail: "\u90AE\u7BB1",
     authPassword: "\u5BC6\u7801",
     authSubmit: "\u63D0\u4EA4",
     authBack: "\u8FD4\u56DE",
     authOr: "\u6216",
     authGuest: "\u6E38\u5BA2\u8FDB\u5165",
     authLoggedInAs: "\u5DF2\u767B\u5F55",
-    authErrRequired: "\u7528\u6237\u540D\u548C\u5BC6\u7801\u4E0D\u80FD\u4E3A\u7A7A\u3002",
-    authErrShortUser: "\u7528\u6237\u540D\u987B\u4E3A3-20\u4E2A\u5B57\u7B26\uFF08\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u4E0B\u5212\u7EBF\uFF09\u3002",
+    authErrRequired: "\u90AE\u7BB1\u548C\u5BC6\u7801\u4E0D\u80FD\u4E3A\u7A7A\u3002",
+    authErrInvalidEmail: "\u8BF7\u8F93\u5165\u6709\u6548\u7684\u90AE\u7BB1\u5730\u5740\u3002",
     authErrShortPass: "\u5BC6\u7801\u81F3\u5C116\u4E2A\u5B57\u7B26\u3002",
     authErrNetwork: "\u7F51\u7EDC\u9519\u8BEF\uFF0C\u8BF7\u91CD\u8BD5\u3002",
     chatRateLimit: "\u7A0D\u7B49\u4E00\u4E0B~",
     reactionRateLimit: "\u4F60\u7684\u95EE\u5019\u5DF2\u9001\u8FBE~",
+    recapTitle: "\u4E0A\u5468\u56DE\u987E",
+    recapOnline: "在线时长",
+    recapReactions: "收到的问候",
+    recapCatGifts: "猫咪叼来的礼物",
+    recapTopPartner: "最常陪伴的人",
+    recapHours: "\u5C0F\u65F6",
+    recapNoData: "\u672C\u5468\u6682\u65E0\u6570\u636E",
+    recapClose: "\u5173\u95ED",
+    recapSharedHours: "\u5171\u5904",
+    shareCard: "\u5206\u4EAB\u5361\u7247",
+    focusRecap: "\u4E13\u6CE8\u56DE\u987E",
+    shareCardNoData: "\u672C\u5468\u6682\u65E0\u4E13\u6CE8\u6570\u636E",
+    bulletinTitle: "\u7559\u8A00\u677F",
+    bulletinAnnouncements: "\u516C\u544A",
+    bulletinNotes: "\u7559\u8A00",
+    bulletinPlaceholder: "\u7559\u4E2A\u8A00\u5427\u2026",
+    bulletinPost: "\u53D1\u5E03",
+    bulletinLoginRequired: "\u767B\u5F55\u540E\u53EF\u7559\u8A00",
+    bulletinLoginToPost: "\u767B\u5F55\u53BB\u53D1\u5E03",
+    bulletinCooldown: "\u7A0D\u7B49\u4E00\u4E0B",
+    bulletinEmpty: "\u8FD8\u6CA1\u6709\u7559\u8A00",
+    bulletinNoAnn: "\u6682\u65E0\u516C\u544A",
+    bulletinClose: "\u5173\u95ED",
+    follow: "\u5173\u6CE8",
+    unfollow: "\u53D6\u6D88\u5173\u6CE8",
+    followRequiresRegistration: "\u53EA\u80FD\u5173\u6CE8\u5DF2\u6CE8\u518C\u7528\u6237",
   },
 };
 
@@ -491,6 +701,7 @@ function t(key) {
 function setLanguage(lang) {
   currentLang = lang;
   localStorage.setItem("lang", lang);
+  storeSet("settings", "setLang", lang);
   applyLanguage();
 }
 
@@ -498,111 +709,45 @@ function toggleLanguage() {
   setLanguage(currentLang === "en" ? "zh" : "en");
 }
 
+// --- Font system ---
+// Auto-detect: pixel font on PC/iPad, general font on phone
+let usePixelFont = (() => {
+  const stored = localStorage.getItem("fontPixel");
+  if (stored !== null) return stored !== "false";
+  const isMobile = /iPhone|Android.*Mobile/.test(navigator.userAgent);
+  return !isMobile;
+})();
+const FONT_REGULAR = "'MiSans', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+const FONT_PIXEL = "'FusionPixel', 'MiSans', sans-serif";
+
+function currentFont() {
+  return usePixelFont ? FONT_PIXEL : FONT_REGULAR;
+}
+
+function f(size, bold) {
+  const family = (usePixelFont && size < 10) ? FONT_REGULAR : currentFont();
+  return (bold ? "bold " : "") + size + "px " + family;
+}
+
+function applyFont() {
+  document.body.style.fontFamily = currentFont();
+  const btn = document.getElementById("font-toggle");
+  if (btn) btn.textContent = usePixelFont ? "Aa Regular" : "Aa Pixel";
+  if (typeof isMiniPiPOpen === "function" && isMiniPiPOpen()) {
+    miniPiPWindow.document.body.style.fontFamily = currentFont();
+  }
+}
+
+function toggleFont() {
+  usePixelFont = !usePixelFont;
+  localStorage.setItem("fontPixel", String(usePixelFont));
+  storeSet("settings", "setFontPixel", usePixelFont);
+  applyFont();
+}
+
 function applyLanguage() {
-  // Static HTML elements
-  document.getElementById("lang-toggle").textContent = t("lang");
-  const profileTrigger = document.getElementById("profile-trigger");
-  if (profileTrigger) {
-    profileTrigger.title = t("profileTab");
-    profileTrigger.setAttribute("aria-label", t("profileTab"));
-  }
-  const settingsTrigger = document.getElementById("settings-icon");
-  if (settingsTrigger) {
-    settingsTrigger.title = t("systemTab");
-    settingsTrigger.setAttribute("aria-label", t("systemTab"));
-  }
-  const spl = document.getElementById("settings-profile-lang-label");
-  if (spl) spl.textContent = t("profileLangLabel");
-  const stl = document.getElementById("settings-time-label");
-  if (stl) stl.textContent = t("timezoneLabel");
-
-  const miniBtn = document.getElementById("mini-pip-toggle");
-  if (miniBtn) miniBtn.setAttribute("aria-label", t("miniOpen"));
-  document.getElementById("chat-input").placeholder = t("chatPlaceholder");
-  document.getElementById("chat-send").textContent = t("send");
-  document.querySelectorAll(".chat-tab").forEach(btn => {
-    const scope = btn.dataset.scope;
-    if (scope === "all") btn.textContent = t("chatAll");
-    else if (scope === "room") btn.textContent = t("chatRoom");
-    else if (scope === "nearby") btn.textContent = t("chatNearby");
-  });
-  if (typeof updateScopeLabel === "function") updateScopeLabel();
-  document.getElementById("music-toggle").textContent = t("soundOff");
-  document.getElementById("hint").textContent = t(isTouchDevice ? "hintMobile" : "hint");
-
-  // Focus popup
-  document.querySelector(".focus-popup-title").textContent = t("focusPopupTitle");
-  const catBtns = document.querySelectorAll(".focus-cat-btn");
-  const catKeys = ["catWorking", "catStudying", "catReading", "catWriting", "catCreating", "catExercising"];
-  catBtns.forEach((btn, i) => { btn.textContent = t(catKeys[i]); });
-  document.getElementById("focus-task-input").placeholder = t("taskPlaceholder");
-  document.getElementById("focus-confirm").textContent = t("start");
-  document.getElementById("focus-cancel").textContent = t("cancel");
-
-  // Portal confirm
-  const portalTitle = document.querySelector("#focus-portal-confirm .focus-popup-title");
-  if (portalTitle) portalTitle.textContent = t("portalConfirmTitle");
-  document.getElementById("focus-portal-yes").textContent = t("portalConfirmYes");
-  document.getElementById("focus-portal-no").textContent = t("portalConfirmNo");
-
-  // Auto-walk hint
-  document.getElementById("autowalk-hint").textContent = t("grabCoffee");
-
-  // Welcome popup
-  const we = document.getElementById("welcome-enter");
-  if (we) we.textContent = t("welcomeEnter");
-  const wc = document.getElementById("welcome-controls");
-  if (wc) wc.textContent = t(isTouchDevice ? "welcomeControlsMobile" : "welcomeControls");
-  const wnl = document.getElementById("welcome-name-label");
-  if (wnl) wnl.textContent = t("displayedNameLabel");
-  const wtgl = document.getElementById("welcome-tagline-label");
-  if (wtgl) wtgl.textContent = t("taglineLabel");
-  const wll = document.getElementById("welcome-lang-label");
-  if (wll) wll.textContent = t("langLabel");
-  const wtzl = document.getElementById("welcome-tz-label");
-  if (wtzl) wtzl.textContent = t("timezoneLabel");
-  if (typeof updateWelcomeTimeDisplay === "function") updateWelcomeTimeDisplay();
-  const wmp = document.getElementById("welcome-mode-preset");
-  if (wmp) wmp.textContent = t("presetTab");
-  const wmc = document.getElementById("welcome-mode-custom");
-  if (wmc) wmc.textContent = t("customTab");
-  const cpt = document.getElementById("char-popup-title");
-  if (cpt) cpt.textContent = t("chooseCharacter");
-  const ccf = document.getElementById("char-confirm");
-  if (ccf) ccf.textContent = t("charConfirm");
-
-  // Chat toggle
-  const chatPanel = document.getElementById("chat-panel");
-  const chatToggle = document.getElementById("chat-toggle");
-  if (chatToggle && chatPanel) {
-    chatToggle.textContent = chatPanel.classList.contains("collapsed") ? t("chat") : t("hide");
-  }
-
-  // History popup
-  const hpt = document.querySelector(".history-popup-title");
-  if (hpt) hpt.textContent = t("historyTitle");
-  const htl = document.querySelector(".history-today-label");
-  if (htl) htl.textContent = t("historyToday");
-  const hsl = document.querySelectorAll(".history-section-label");
-  if (hsl[0]) hsl[0].textContent = t("historyLast7Days");
-  if (hsl[1]) hsl[1].textContent = t("historyRecentSessions");
-  const hc = document.getElementById("history-close");
-  if (hc) hc.textContent = t("historyClose");
-
-  // Rec button
-  const _recBtn = document.getElementById("rec-btn");
-  if (_recBtn && !isRecording) _recBtn.title = t("recStart");
-
-  // Auth UI
-  const welcomeAuthOr = document.getElementById("welcome-auth-or");
-  if (welcomeAuthOr) welcomeAuthOr.textContent = t("authOr");
-  const welcomeLoginBtn = document.getElementById("welcome-login-btn");
-  if (welcomeLoginBtn) welcomeLoginBtn.textContent = t("authLogin");
-  const welcomeRegisterBtn = document.getElementById("welcome-register-btn");
-  if (welcomeRegisterBtn) welcomeRegisterBtn.textContent = t("authRegister");
-  if (typeof updateAuthUI === "function") updateAuthUI();
-
-  // Re-apply dynamic UI
+  // DOM text updates now handled by React components.
+  // Keep miniPiP + room UI synced.
   if (typeof updateMiniPiPButton === "function") updateMiniPiPButton();
   if (typeof renderMiniPiPStatus === "function") renderMiniPiPStatus();
   if (typeof updateRoomUI === "function") updateRoomUI();
@@ -626,21 +771,25 @@ function setDebugTimeHour(hour) {
   if (hour === null || hour === undefined) {
     debugTimeHour = null;
     try { localStorage.removeItem(DEBUG_TIME_KEY); } catch {}
-    if (typeof updateWelcomeTimeDisplay === "function") updateWelcomeTimeDisplay();
-    return true;
+      return true;
   }
   const num = Number(hour);
   if (!Number.isFinite(num)) return false;
   const h = Math.max(0, Math.min(23, Math.floor(num)));
   debugTimeHour = h;
   try { localStorage.setItem(DEBUG_TIME_KEY, String(h)); } catch {}
-  if (typeof updateWelcomeTimeDisplay === "function") updateWelcomeTimeDisplay();
   return true;
 }
 
+let _cachedHour = -1, _cachedHourAt = 0;
 function getTimezoneHour() {
   if (debugTimeHour !== null && debugTimeHour !== undefined) return debugTimeHour;
-  return new Date().getHours();
+  const now = Date.now();
+  if (now - _cachedHourAt > 10000) { // refresh every 10s
+    _cachedHour = new Date().getHours();
+    _cachedHourAt = now;
+  }
+  return _cachedHour;
 }
 
 function getTimePeriod() {
@@ -653,6 +802,9 @@ function getTimePeriod() {
   if (h < 19) return { emoji: "\uD83C\uDF06", key: "timeDusk" };
   return { emoji: "\uD83C\uDF11", key: "timeNight" };
 }
+
+// --- Name tag colors (shared with tokens.css: --name-self/--name-followed/--name-others) ---
+const NAME_COLORS = { self: "#A0F0B0", followed: "#FF8FAB", others: "#ffffff" };
 
 // --- Constants ---
 const PLAYER_SIZE = 24;
@@ -829,6 +981,7 @@ let selectedCharConfig = (() => {
   return { preset: 1 };
 })();
 let savedTagline = localStorage.getItem("playerTagline") || "";
+let savedProfession = localStorage.getItem("playerProfession") || "mystery";
 let selectedLanguages = (() => {
   const saved = localStorage.getItem("playerLanguages");
   if (saved) { try { const arr = JSON.parse(saved); if (Array.isArray(arr) && arr.length) return arr; } catch(e) {} }
@@ -884,6 +1037,22 @@ function drawCharHeadPreview(canvas, config) {
   }
 }
 
+// Expose function for React to get current avatar canvas (32x64 full body)
+window.__getCurrentAvatarCanvas = function() {
+  const cvs = document.createElement("canvas");
+  drawCharPreview(cvs, selectedCharConfig);
+  return cvs;
+};
+
+// Expose function for React PlayerCard to draw a player's head avatar
+window.__drawPlayerCardAvatar = function(canvasEl, playerId) {
+  if (!canvasEl) return;
+  const p = playerId === myId ? localPlayer : otherPlayers[playerId];
+  const config = p?.character || (playerId === myId ? selectedCharConfig : null);
+  if (!config) return;
+  drawCharHeadPreview(canvasEl, config);
+};
+
 function updateSettingsCharBtn() {
   const btn = document.getElementById("settings-char-btn");
   if (btn) {
@@ -905,6 +1074,16 @@ function updateSettingsCharBtn() {
       profileBtn.appendChild(head);
     }
     drawCharHeadPreview(head, selectedCharConfig);
+  }
+  // Also update the React profile icon
+  const profileBtnReact = document.getElementById("profile-icon-react");
+  if (profileBtnReact) {
+    let head2 = profileBtnReact.querySelector("canvas");
+    if (!head2) {
+      head2 = document.createElement("canvas");
+      profileBtnReact.appendChild(head2);
+    }
+    drawCharHeadPreview(head2, selectedCharConfig);
   }
 }
 
@@ -942,21 +1121,28 @@ function initCustomizerCtx(previewId, optionsId, variantsId, tabsContainer, pres
   };
 }
 
+// Visible limits (rest reserved for unlock/exchange)
+const VISIBLE_BODY = 7;
+const VISIBLE_OUTFIT = 14;
+const VISIBLE_HAIR = 14;
+const VISIBLE_ACC = 6;
+
 function generateRandomConfig() {
   const randInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
   const pad = n => String(n).padStart(2, "0");
-  const bodyId = randInt(1, CHAR_CATALOG.bodies);
+  const bodyId = randInt(1, VISIBLE_BODY);
   const eyesId = randInt(1, CHAR_CATALOG.eyes);
-  const outfitStyles = Object.keys(CHAR_CATALOG.outfits).map(Number);
+  const outfitStyles = Object.keys(CHAR_CATALOG.outfits).map(Number).filter(s => s <= VISIBLE_OUTFIT);
   const oStyle = outfitStyles[randInt(0, outfitStyles.length - 1)];
   const oVar = randInt(1, CHAR_CATALOG.outfits[oStyle]);
-  const hairStyles = Object.keys(CHAR_CATALOG.hairs).map(Number);
+  const hairStyles = Object.keys(CHAR_CATALOG.hairs).map(Number).filter(s => s <= VISIBLE_HAIR);
   const hStyle = hairStyles[randInt(0, hairStyles.length - 1)];
   const hVar = randInt(1, CHAR_CATALOG.hairs[hStyle]);
   // 30% chance of accessory
   let acc = null;
   if (Math.random() < 0.3) {
-    const a = CHAR_CATALOG.accessories[randInt(0, CHAR_CATALOG.accessories.length - 1)];
+    const visibleAcc = CHAR_CATALOG.accessories.filter(a => a.id <= VISIBLE_ACC);
+    const a = visibleAcc[randInt(0, visibleAcc.length - 1)];
     acc = pad(a.id) + "_" + a.name + "_" + pad(randInt(1, a.variants));
   }
   return { body: bodyId, eyes: eyesId, outfit: pad(oStyle) + "_" + pad(oVar), hair: pad(hStyle) + "_" + pad(hVar), acc };
@@ -996,12 +1182,14 @@ function openCustomizer(initialConfig) {
   initCustomizerCtx("customizer-preview-canvas", "customizer-options", "customizer-variants",
     overlay.querySelector(".customizer-tabs"), "overlay-presets");
   overlay.style.display = "flex";
+  storeSet("ui", "setCustomizerOpen", true);
   activateCustomizer(initialConfig, "body");
 }
 
 function closeCustomizer(revert) {
   const overlay = document.getElementById("char-customizer");
   if (overlay) overlay.style.display = "none";
+  storeSet("ui", "setCustomizerOpen", false);
   if (revert && customizerSavedConfig) {
     applyCharConfig(customizerSavedConfig);
   }
@@ -1028,25 +1216,6 @@ function setCustomSectionVisible(visible) {
 function renderPresetsRow(container) {
   if (!container) return;
   container.innerHTML = "";
-  // Random button
-  const randBtn = document.createElement("div");
-  randBtn.className = "cust-random";
-  randBtn.textContent = "\uD83C\uDFB2";
-  randBtn.title = "Random";
-  randBtn.addEventListener("click", () => {
-    const config = generateRandomConfig();
-    customizerConfig = config;
-    if (!customizerIsOverlay) applyCharConfig(config);
-    if (customizerCtx && customizerCtx.preview) {
-      compositeCache.delete(getCompositeKey(config));
-      drawCharPreview(customizerCtx.preview, config);
-    }
-    container.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
-    // Show custom section and refresh tabs
-    setCustomSectionVisible(true);
-    renderCustomizerTab(customizerTab);
-  });
-  container.appendChild(randBtn);
   // Premade characters
   for (let i = 1; i <= PREMADE_COUNT; i++) {
     const config = { preset: i };
@@ -1089,12 +1258,12 @@ function renderCustomizerTab(tabName) {
   }
 
   if (tabName === "body") {
-    for (let i = 1; i <= CHAR_CATALOG.bodies; i++) {
+    for (let i = 1; i <= Math.min(VISIBLE_BODY, CHAR_CATALOG.bodies); i++) {
       const btn = document.createElement("div");
       btn.className = "cust-option" + (customizerConfig.body === i ? " selected" : "");
       const colors = ["#bf8b78","#ffcbb0","#ffb893","#bb845c","#cdb57a","#d4cabb","#f0ae80","#e6b8d7","#bab8d7"];
       btn.style.background = colors[i - 1] || "#ccc";
-      btn.style.width = "36px"; btn.style.height = "36px"; btn.style.borderRadius = "50%";
+      btn.style.width = "40px"; btn.style.height = "40px"; btn.style.borderRadius = "50%";
       btn.addEventListener("click", () => {
         customizerConfig.body = i;
         onCustomizerChange();
@@ -1117,7 +1286,7 @@ function renderCustomizerTab(tabName) {
       optionsEl.appendChild(btn);
     }
   } else if (tabName === "outfit") {
-    const styles = Object.keys(CHAR_CATALOG.outfits).map(Number);
+    const styles = Object.keys(CHAR_CATALOG.outfits).map(Number).filter(s => s <= VISIBLE_OUTFIT);
     const currentStyle = parseInt(customizerConfig.outfit.split("_")[0]);
     const currentVariant = parseInt(customizerConfig.outfit.split("_")[1]);
     styles.forEach(s => {
@@ -1146,7 +1315,7 @@ function renderCustomizerTab(tabName) {
       variantsEl.appendChild(btn);
     }
   } else if (tabName === "hair") {
-    const styles = Object.keys(CHAR_CATALOG.hairs).map(Number);
+    const styles = Object.keys(CHAR_CATALOG.hairs).map(Number).filter(s => s <= VISIBLE_HAIR);
     const currentStyle = parseInt(customizerConfig.hair.split("_")[0]);
     const currentVariant = parseInt(customizerConfig.hair.split("_")[1]);
     styles.forEach(s => {
@@ -1193,7 +1362,7 @@ function renderCustomizerTab(tabName) {
       currentAccId = parseInt(parts[0]);
       currentAccVariant = parseInt(parts[parts.length - 1]);
     }
-    CHAR_CATALOG.accessories.forEach(acc => {
+    CHAR_CATALOG.accessories.filter(a => a.id <= VISIBLE_ACC).forEach(acc => {
       const btn = document.createElement("div");
       btn.className = "cust-option" + (currentAccId === acc.id ? " selected" : "");
       btn.textContent = acc.id;
@@ -1226,6 +1395,77 @@ function renderCustomizerTab(tabName) {
   }
 }
 
+// Welcome customizer init — callable by React on mount
+function _initWelcomeCustomizer() {
+  const welcomeTabs = document.getElementById("welcome-tabs");
+  // Only proceed if the REAL element exists (not a proxy shim)
+  if (!welcomeTabs || !welcomeTabs.parentElement) return;
+  initCustomizerCtx("welcome-preview-canvas", "welcome-options", "welcome-variants", welcomeTabs, "welcome-presets");
+  welcomeTabs.querySelectorAll(".ctab").forEach(btn => {
+    // Remove old listeners by cloning
+    const fresh = btn.cloneNode(true);
+    btn.parentNode.replaceChild(fresh, btn);
+    fresh.addEventListener("click", () => {
+      if (customizerConfig && customizerConfig.preset) {
+        customizerConfig = { body: 1, eyes: 1, outfit: "01_01", hair: "01_01", acc: null };
+      }
+      setCustomSectionVisible(true);
+      if (customizerCtx && customizerCtx.presets) customizerCtx.presets.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
+      welcomeTabs.querySelectorAll(".ctab").forEach(b => b.classList.remove("active"));
+      fresh.classList.add("active");
+      renderCustomizerTab(fresh.dataset.tab);
+      renderCustomizerPreview();
+    });
+  });
+  activateCustomizer(selectedCharConfig, "body");
+
+  const modePreset = document.getElementById("welcome-mode-preset");
+  const modeCustom = document.getElementById("welcome-mode-custom");
+  const presetsEl = document.getElementById("welcome-presets");
+  function setWelcomeMode(mode) {
+    if (mode === "preset") {
+      if (modePreset) modePreset.classList.add("active");
+      if (modeCustom) modeCustom.classList.remove("active");
+      if (presetsEl) presetsEl.style.display = "";
+      setCustomSectionVisible(false);
+    } else {
+      if (modeCustom) modeCustom.classList.add("active");
+      if (modePreset) modePreset.classList.remove("active");
+      if (presetsEl) presetsEl.style.display = "none";
+      if (customizerConfig && customizerConfig.preset) {
+        customizerConfig = { body: 1, eyes: 1, outfit: "01_01", hair: "01_01", acc: null };
+      }
+      setCustomSectionVisible(true);
+      renderCustomizerTab(customizerTab);
+      renderCustomizerPreview();
+      if (welcomeTabs) {
+        welcomeTabs.querySelectorAll(".ctab").forEach(b =>
+          b.classList.toggle("active", b.dataset.tab === customizerTab));
+      }
+    }
+  }
+  if (modePreset) modePreset.addEventListener("click", () => setWelcomeMode("preset"));
+  if (modeCustom) modeCustom.addEventListener("click", () => setWelcomeMode("custom"));
+  setWelcomeMode("preset");
+
+  const diceBtn = document.getElementById("welcome-dice");
+  if (diceBtn) {
+    diceBtn.addEventListener("click", () => {
+      const config = generateRandomConfig();
+      customizerConfig = config;
+      applyCharConfig(config);
+      if (customizerCtx && customizerCtx.preview) {
+        compositeCache.delete(getCompositeKey(config));
+        drawCharPreview(customizerCtx.preview, config);
+      }
+      if (presetsEl) presetsEl.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
+      setWelcomeMode("custom");
+      // Re-render current tab to highlight the randomly selected options
+      renderCustomizerTab(customizerTab);
+    });
+  }
+}
+
 // Hook up events (deferred to DOM ready)
 setTimeout(() => {
   // Overlay customizer (for settings)
@@ -1249,70 +1489,9 @@ setTimeout(() => {
   });
   document.getElementById("customizer-cancel")?.addEventListener("click", () => closeCustomizer(true));
 
-  // Welcome customizer (inline in welcome popup)
-  const welcomeTabs = document.getElementById("welcome-tabs");
-  if (welcomeTabs) {
-    initCustomizerCtx("welcome-preview-canvas", "welcome-options", "welcome-variants", welcomeTabs, "welcome-presets");
-    welcomeTabs.querySelectorAll(".ctab").forEach(btn => {
-      btn.addEventListener("click", () => {
-        if (customizerConfig && customizerConfig.preset) {
-          customizerConfig = { body: 1, eyes: 1, outfit: "01_01", hair: "01_01", acc: null };
-        }
-        setCustomSectionVisible(true);
-        if (customizerCtx && customizerCtx.presets) customizerCtx.presets.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
-        welcomeTabs.querySelectorAll(".ctab").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        renderCustomizerTab(btn.dataset.tab);
-        renderCustomizerPreview();
-      });
-    });
-    // Initialize with body tab and default config
-    activateCustomizer(selectedCharConfig, "body");
-
-    // Welcome mode tabs (Presets / Custom)
-    const modePreset = document.getElementById("welcome-mode-preset");
-    const modeCustom = document.getElementById("welcome-mode-custom");
-    const presetsEl = document.getElementById("welcome-presets");
-    function setWelcomeMode(mode) {
-      if (mode === "preset") {
-        modePreset.classList.add("active");
-        modeCustom.classList.remove("active");
-        if (presetsEl) presetsEl.style.display = "";
-        setCustomSectionVisible(false);
-      } else {
-        modeCustom.classList.add("active");
-        modePreset.classList.remove("active");
-        if (presetsEl) presetsEl.style.display = "none";
-        if (customizerConfig && customizerConfig.preset) {
-          customizerConfig = { body: 1, eyes: 1, outfit: "01_01", hair: "01_01", acc: null };
-        }
-        setCustomSectionVisible(true);
-        renderCustomizerTab(customizerTab);
-        renderCustomizerPreview();
-      }
-    }
-    if (modePreset) modePreset.addEventListener("click", () => setWelcomeMode("preset"));
-    if (modeCustom) modeCustom.addEventListener("click", () => setWelcomeMode("custom"));
-    // Default to preset mode
-    setWelcomeMode("preset");
-
-    // Dice button (random)
-    const diceBtn = document.getElementById("welcome-dice");
-    if (diceBtn) {
-      diceBtn.addEventListener("click", () => {
-        const config = generateRandomConfig();
-        customizerConfig = config;
-        applyCharConfig(config);
-        if (customizerCtx && customizerCtx.preview) {
-          compositeCache.delete(getCompositeKey(config));
-          drawCharPreview(customizerCtx.preview, config);
-        }
-        if (presetsEl) presetsEl.querySelectorAll(".cust-premade").forEach(c => c.classList.remove("selected"));
-        // Switch to custom mode since random generates a custom config
-        setWelcomeMode("custom");
-      });
-    }
-  }
+  // Welcome customizer — extracted to a function so React can re-call it on mount
+  _initWelcomeCustomizer();
+  window.__initWelcomeCustomizer = _initWelcomeCustomizer;
 
   updateSettingsCharBtn();
 }, 500);
@@ -1366,6 +1545,7 @@ const DOOR_FRAME_H = 64;   // sprite frame height (2 tiles)
 const DOOR_OPEN_FRAMES = 7; // frames 0-6 = opening sequence
 const DOOR_FRAME_MS = 80;   // ms per animation frame
 const DOOR_TRIGGER_DIST = 3 * TILE; // proximity trigger distance
+const DOOR_TRIGGER_DIST_SQ = DOOR_TRIGGER_DIST * DOOR_TRIGGER_DIST;
 
 // Door objects per room: { room: [{ x, y, tileX, tileY, state, frame, lastTime }, ...] }
 const roomDoors = { focus: [], rest: [] };
@@ -1400,14 +1580,14 @@ function isAnyPlayerNearDoor(door) {
   // Check local player
   if (localPlayer) {
     const dx = localPlayer.x - cx, dy = localPlayer.y - cy;
-    if (Math.sqrt(dx * dx + dy * dy) < DOOR_TRIGGER_DIST) return true;
+    if (dx * dx + dy * dy < DOOR_TRIGGER_DIST_SQ) return true;
   }
   // Check remote players
   for (const id in players) {
     const p = players[id];
     if (p.room !== currentRoom) continue;
     const dx = p.x - cx, dy = p.y - cy;
-    if (Math.sqrt(dx * dx + dy * dy) < DOOR_TRIGGER_DIST) return true;
+    if (dx * dx + dy * dy < DOOR_TRIGGER_DIST_SQ) return true;
   }
   return false;
 }
@@ -1573,6 +1753,7 @@ const TIME_VISUALS = {
 const OUTDOOR_TILE = 16;
 const outdoorMaskCache = { focus: undefined, rest: undefined };
 const outdoorShadeCache = { focus: null, rest: null };
+const _shadeTimeKey = { focus: null, rest: null }; // track timeKey to avoid rebuilding shade every frame
 
 function buildOutdoorMask(room) {
   const rd = ROOM_DATA[room];
@@ -1785,7 +1966,8 @@ function parseTiledMapLayers(data) {
         const layerName = String(layer.name || "").toLowerCase();
         const isAbove = layerName.includes("above");
         for (const obj of layer.objects) {
-          if (!obj.gid) continue; // only tile objects
+          const objType = String(obj.type || obj.class || "").toLowerCase();
+          if (!obj.gid && objType !== "bulletin_board") continue; // only tile objects (+ bulletin_board rects)
           const props = {};
           if (obj.properties) {
             for (const p of obj.properties) props[p.name] = p.value;
@@ -1796,7 +1978,7 @@ function parseTiledMapLayers(data) {
           const entry = {
             id: obj.id,
             x: obj.x,
-            y: obj.y - obj.height, // Tiled tile objects have y at bottom
+            y: obj.gid ? obj.y - obj.height : obj.y, // tile objects: y at bottom; rectangles: y at top
             width: obj.width,
             height: obj.height,
             gid: obj.gid,
@@ -1901,6 +2083,26 @@ function parseTiledMapLayers(data) {
         typeof img.decode === "function" ? img.decode().catch(() => {}) : Promise.resolve()
       ));
       allRegs.forEach(ts => { if (ts.img) ts.img._loaded = true; });
+      // Promote static tile objects (decorations on furniture) to above pass
+      // so they render after the Y-sorted entity/object tile rows
+      for (const room of ["focus", "rest"]) {
+        const rd = ROOM_DATA[room];
+        const reg = roomTilesetRegistry[room];
+        if (!reg || !reg.length) continue;
+        for (let i = rd.mapObjectsBelow.length - 1; i >= 0; i--) {
+          const obj = rd.mapObjectsBelow[i];
+          if (!obj.gid) continue;
+          for (let j = reg.length - 1; j >= 0; j--) {
+            if (obj.gid >= reg[j].firstgid) {
+              if (!reg[j].frameCount && !obj.type) {
+                rd.mapObjectsBelow.splice(i, 1);
+                rd.mapObjectsAbove.push(obj);
+              }
+              break;
+            }
+          }
+        }
+      }
       gameReady = true;
       dismissLoadingOverlay();
     } else {
@@ -2283,7 +2485,7 @@ function getAboveCache(room) {
   if (_tileCache[key]) return _tileCache[key];
   const rd = ROOM_DATA[room];
   if (!rd.aboveLayers || !rd.aboveLayers.length) return null;
-  const cached = _buildLayerCache(room, rd.aboveLayers, null, null);
+  const cached = _buildLayerCache(room, rd.aboveLayers, null, null, true);
   if (cached) _tileCache[key] = cached;
   return cached;
 }
@@ -2698,7 +2900,7 @@ function drawPortalLabel(x, y, colors) {
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const ps = gameToScreen(px + pw / 2, py - 10);
-  ctx.font = "bold 16px 'MiSans', sans-serif";
+  ctx.font = f(16, true);
   ctx.letterSpacing = "0.32px";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -2777,7 +2979,7 @@ function drawPortal(x, y, colors) {
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const ps = gameToScreen(px + pw / 2, py - 10);
-    ctx.font = "bold 16px 'MiSans', sans-serif";
+    ctx.font = f(16, true);
     ctx.letterSpacing = "0.32px";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -2952,28 +3154,36 @@ function drawPlayerBody(player, isLocal) {
 
 // Convert game coords to screen coords (bypassing canvas transform)
 function gameToScreen(gx, gy) {
+  // Use the same quantized scale (gs) as the game transform to stay aligned with sprites
+  const gs = Math.round(gameScale * dpr * TILE) / TILE;
   return {
-    x: Math.round((gx - cameraX) * gameScale),
-    y: Math.round((gy - cameraY) * gameScale),
+    x: Math.round((gx - cameraX) * gs / dpr),
+    y: Math.round((gy - cameraY) * gs / dpr),
   };
 }
 
 function drawPlayerLabel(player) {
   const { name, status } = player;
+  const isLocal = player.id === myId;
+  const followed = !isLocal && (player._userId ? isFollowed(player._userId) : isFollowed(player.id));
+  if (isLocal && !showNamesFilter.self) return;
+  if (followed && !showNamesFilter.followed) return;
+  if (!isLocal && !followed && !showNamesFilter.others) return;
+
   const vp = getPlayerVisualPos(player);
 
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const isLocal = player.id === myId;
   const nameText = name || "???";
   const px = 8, py = 4;
 
   // Name label
-  ctx.font = "bold 16px 'MiSans', sans-serif";
+  ctx.font = f(16, true);
   ctx.letterSpacing = "0.32px";
   ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  const nameWidth = Math.ceil(ctx.measureText(nameText).width);
+  ctx.textBaseline = "alphabetic";
+  const tm = ctx.measureText(nameText);
+  const nameWidth = Math.ceil(tm.width);
   const s = gameToScreen(vp.x, vp.y);
   const lw = nameWidth + px * 2;
   const lh = 16 + py * 2;
@@ -2983,12 +3193,29 @@ function drawPlayerLabel(player) {
   ctx.beginPath();
   ctx.roundRect(lx, ly, lw, lh, 4);
   ctx.fill();
-  ctx.fillStyle = isLocal ? "#fff" : "#4DA6FF";
-  ctx.fillText(nameText, s.x, ly + lh / 2);
+
+  // Birthday month — diagonal corner glow
+  const isBirthdayMonth = player.birthMonth && player.birthMonth === (new Date().getMonth() + 1);
+  if (isBirthdayMonth) {
+    const grad = ctx.createLinearGradient(lx, ly, lx + lw, ly + lh);
+    grad.addColorStop(0, "#F472B6");
+    grad.addColorStop(0.5, "#A78BFA");
+    grad.addColorStop(1, "#38BDF8");
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(lx - 0.5, ly - 0.5, lw + 1, lh + 1, 5);
+    ctx.stroke();
+  }
+
+  // Vertically center text using actual glyph metrics (fixes CJK offset)
+  const textY = ly + (lh + tm.actualBoundingBoxAscent - tm.actualBoundingBoxDescent) / 2;
+  ctx.fillStyle = isLocal ? NAME_COLORS.self : (followed ? NAME_COLORS.followed : NAME_COLORS.others);
+  ctx.fillText(nameText, s.x, textY);
 
   // Status emoji above name label (manually centered to avoid glyph offset)
   const emojiY = ly - 4;
-  ctx.font = "16px 'MiSans', sans-serif";
+  ctx.font = f(16, false);
   ctx.textBaseline = "bottom";
   ctx.textAlign = "left";
   if (player.isFocusing) {
@@ -3031,7 +3258,7 @@ function drawChatBubble(player) {
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.globalAlpha = alpha;
-  ctx.font = "14px 'MiSans', sans-serif";
+  ctx.font = f(14, false);
   ctx.letterSpacing = "0.32px";
 
   // Measure and truncate to max width
@@ -3056,7 +3283,7 @@ function drawChatBubble(player) {
 
   // Bubble background
   const r = 6;
-  ctx.fillStyle = "rgba(22,33,62,0.88)";
+  ctx.fillStyle = "rgba(13,13,13,0.72)";
   ctx.beginPath();
   ctx.moveTo(bx + r, by);
   ctx.lineTo(bx + bw - r, by);
@@ -3077,7 +3304,7 @@ function drawChatBubble(player) {
   // Text (left-aligned)
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  const textColor = bubble.scope === "nearby" ? "#7ee6a8" : "#fff";
+  const textColor = bubble.scope === "nearby" ? "#88c498" : "#e4e0d8";
   ctx.fillStyle = textColor;
   ctx.fillText(displayText, bx + padX, by + bh / 2);
   ctx.restore();
@@ -3145,7 +3372,88 @@ function getNearestCampfire() {
   return best;
 }
 
-const DOOR_ANIM_SPEED = 0.02;     // door open/close speed per frame (0→1 in ~50 frames)
+// Bulletin board interaction
+const BULLETIN_INTERACT_DIST = 80;
+let bulletinPopupOpen = false;
+let bulletinCooldownUntil = 0;
+
+function isBulletinBoardObj(obj, ts) {
+  if (!obj) return false;
+  const objType = String(obj.type || obj.class || "").toLowerCase();
+  const objName = String(obj.name || "").toLowerCase();
+  return objType === "bulletin_board" || objName === "bulletin_board";
+}
+
+function getNearestBulletinBoard() {
+  const objs = ROOM_DATA[currentRoom].mapObjects;
+  if (!objs || !objs.length || !localPlayer) return null;
+  let best = null;
+  let bestDist = Infinity;
+  for (const obj of objs) {
+    if (!isBulletinBoardObj(obj)) continue;
+    const ts = obj.gid ? findTilesetForGID(obj.gid) : null;
+    const w = obj.width || (ts ? ts.tileW : 32);
+    const h = obj.height || (ts ? ts.tileH : 32);
+    const cx = obj.x + w / 2;
+    const cy = obj.y;
+    const dist = Math.abs(localPlayer.x - cx) + Math.abs(localPlayer.y - cy);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = { id: obj.id, x: cx, y: cy, dist };
+    }
+  }
+  return best;
+}
+
+function openBulletinPopup() {
+  bulletinPopupOpen = true;
+  storeSet("ui", "setBulletinOpen", true);
+  socket.emit("getBulletinNotes");
+}
+
+function closeBulletinPopup() {
+  bulletinPopupOpen = false;
+  storeSet("ui", "setBulletinOpen", false);
+}
+
+// timeAgo, renderBulletinNotes removed — React BulletinPopup handles rendering via storeSet
+
+const DOOR_ANIM_SPEED = 0.04;     // door open/close speed per frame (0→1 in ~25 frames)
+
+// Draw a single pet/animal map object (used by Y-sorted entity pass)
+function drawSingleMapObject(obj) {
+  const ts = findTilesetForGID(obj.gid);
+  if (!ts || !ts.img || !ts.img._loaded || !ts.frameCount) return;
+  const now = Date.now();
+  let frame;
+  if (!obj._napNext) obj._napNext = now + 3000 + Math.random() * 5000;
+  if (!obj._napPlaying) obj._napPlaying = false;
+  if (!obj._napPlaying) {
+    if (now >= obj._napNext) { obj._napPlaying = true; obj._napStart = now; }
+    frame = 0;
+  } else {
+    const elapsed = now - obj._napStart;
+    frame = Math.floor(elapsed / 300);
+    if (frame >= ts.frameCount) { frame = 0; obj._napPlaying = false; obj._napNext = now + 4000 + Math.random() * 4000; }
+  }
+  const sx = (frame % ts.columns) * ts.tileW;
+  const sy = Math.floor(frame / ts.columns) * ts.tileH;
+  const { w, h } = getObjDrawSize(obj, ts);
+  ctx.drawImage(ts.img, sx, sy, ts.tileW, ts.tileH, obj.x, obj.y, w, h);
+  // Name label (hide for banli)
+  if (obj.name && obj.name.toLowerCase() !== "banli") {
+    ctx.save();
+    ctx.font = f(7, true);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    const labelX = obj.x + w / 2, labelY = obj.y - 4;
+    const tw = ctx.measureText(obj.name).width;
+    ctx.fillRect(labelX - tw / 2 - 2, labelY - 6, tw + 4, 8);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(obj.name, labelX, labelY);
+    ctx.restore();
+  }
+}
 
 function drawMapObjects(objs = ROOM_DATA[currentRoom].mapObjects) {
   if (!objs || !objs.length) return;
@@ -3157,14 +3465,26 @@ function drawMapObjects(objs = ROOM_DATA[currentRoom].mapObjects) {
   const py = localPlayer ? localPlayer.y : 0;
 
   for (const obj of objs) {
+    // Skip pet/animal objects — they are drawn in the Y-sorted entity pass
+    if (obj.type === "pet" || obj.type === "animal") continue;
     const ts = findTilesetForGID(obj.gid);
-    if (!ts || !ts.img || !ts.img._loaded || !ts.frameCount) continue;
+    if (!ts || !ts.img || !ts.img._loaded) continue;
     const isButterfly = isButterflyObj(obj, ts);
     if (isButterfly && !butterflyState.visible) continue;
     if (isFrogObj(obj, ts) && !isFrogActiveTime()) continue;
     if (isFishObj(obj, ts) && !isFishActiveTime()) continue;
     const campfire = isCampfireObj(obj, ts);
     if (campfire) continue; // draw campfires in a dedicated pass above
+
+    // Static tile object (not an animated OBJECT_TILESET) — draw directly from tileset
+    if (!ts.frameCount) {
+      const localId = obj.gid - ts.firstgid;
+      const sx = (localId % ts.columns) * ts.tileW;
+      const sy = Math.floor(localId / ts.columns) * ts.tileH;
+      const { w, h } = getObjDrawSize(obj, ts);
+      ctx.drawImage(ts.img, sx, sy, ts.tileW, ts.tileH, obj.x, obj.y, w, h);
+      continue;
+    }
 
     let frame;
     if (ts.isDoor) {
@@ -3186,7 +3506,7 @@ function drawMapObjects(objs = ROOM_DATA[currentRoom].mapObjects) {
       else if (obj._doorProgress > target) obj._doorProgress = Math.max(target, obj._doorProgress - DOOR_ANIM_SPEED);
       // Only use the opening frames (first half of spritesheet for round-trip animations)
       frame = Math.round(obj._doorProgress * (ts.openFrames - 1));
-    } else if (obj.type === "pet") {
+    } else if (obj.type === "pet" || obj.type === "animal") {
       // Napping pet: mostly still, occasional slow tail wag
       if (!obj._napNext) obj._napNext = now + 3000 + Math.random() * 5000;
       if (!obj._napPlaying) obj._napPlaying = false;
@@ -3234,9 +3554,9 @@ function drawMapObjects(objs = ROOM_DATA[currentRoom].mapObjects) {
     ctx.drawImage(ts.img, sx, sy, ts.tileW, ts.tileH, dx, dy, w, h);
 
     // Draw name label for pets (hide for banli)
-    if (obj.name && obj.type === "pet" && obj.name.toLowerCase() !== "banli") {
+    if (obj.name && (obj.type === "pet" || obj.type === "animal") && obj.name.toLowerCase() !== "banli") {
       ctx.save();
-      ctx.font = "bold 7px MiSans, sans-serif";
+      ctx.font = f(7, true);
       ctx.textAlign = "center";
       ctx.fillStyle = "rgba(0,0,0,0.4)";
       const { w } = getObjDrawSize(obj, ts);
@@ -3619,7 +3939,7 @@ function drawCatBody() {
   // Zzz for sleeping state
   if (state === "sleep") {
     const zFloat = Math.sin(catAnimFrame) * 2;
-    ctx.font = "16px 'MiSans', sans-serif";
+    ctx.font = f(16, false);
     ctx.fillStyle = "rgba(255,255,255,0.5)";
     ctx.textAlign = "center";
     ctx.fillText("z", x + 12, y - 18 + zFloat);
@@ -3721,7 +4041,7 @@ function drawCatBody_procedural() {
     }
     // Zzz
     const zFloat = Math.sin(catAnimFrame) * 2;
-    ctx.font = "16px 'MiSans', sans-serif";
+    ctx.font = f(16, false);
     ctx.fillStyle = "rgba(255,255,255,0.5)";
     ctx.textAlign = "center";
     ctx.fillText("z", x + 10, y - 8 + zFloat);
@@ -4042,7 +4362,7 @@ function drawCatUI() {
 
   // Ear perk overlay
   if (catData.earPerk && (state === "sit" || state === "sleep")) {
-    ctx.font = "bold 16px 'MiSans', sans-serif";
+    ctx.font = f(16, true);
     ctx.fillStyle = "#f5a623";
     ctx.textAlign = "center";
     ctx.fillText("!", x + 8, y - 22);
@@ -4053,7 +4373,7 @@ function drawCatUI() {
     catMiuTimer--;
     const miuAlpha = catMiuTimer < 30 ? catMiuTimer / 30 : 1;
     catMiuY -= 0.15;
-    ctx.font = "12px 'MiSans', sans-serif";
+    ctx.font = f(12, false);
     ctx.textAlign = "center";
     ctx.fillStyle = `rgba(255,255,255,${miuAlpha * 0.9})`;
     ctx.fillText(currentLang === "zh" ? "喵~" : "Meow~", catMiuX, catMiuY);
@@ -4062,7 +4382,7 @@ function drawCatUI() {
   // Stare: floating "..." thought bubble
   if (state === "stare") {
     const dotFloat = Math.sin(catAnimFrame * 1.5) * 1.5;
-    ctx.font = "bold 14px 'MiSans', sans-serif";
+    ctx.font = f(14, true);
     ctx.textAlign = "center";
     ctx.fillStyle = "rgba(255,255,255,0.55)";
     ctx.fillText("...", x, y - 24 + dotFloat);
@@ -4204,22 +4524,23 @@ function updateAndDrawReactionEmojis() {
         r.timer = 0;
       }
     } else if (r.phase === "hover") {
-      // Phase 4: Stay above target's head for 5s (300 frames)
+      // Phase 4: Stay above target's head for 8s (480 frames), fade out last 2s
       if (target) {
         r.x = target.x;
         r.y = target.y - HEAD_OFFSET + Math.sin(r.timer * 0.04) * 1.5;
       }
-      if (r.timer >= 300) {
+      if (r.timer >= 480) {
         reactionEmojis.splice(i, 1);
         continue;
       }
+      r._fadeAlpha = r.timer >= 360 ? 1 - (r.timer - 360) / 120 : 1;
     }
 
     // Draw in screen space (like status emoji) to avoid scaling artifacts
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.globalAlpha = 1;
-    ctx.font = "16px 'MiSans', sans-serif";
+    ctx.globalAlpha = r._fadeAlpha != null ? r._fadeAlpha : 1;
+    ctx.font = f(16, false);
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     const sp = gameToScreen(r.x, r.y);
@@ -4352,9 +4673,15 @@ function updateAndDrawScatterGifts() {
 // FOCUS AURA (glow around focusing players)
 // ============================================================
 // Stages: 0-30min hidden, 30 white, 60 green, 90 blue, 120 purple, 150+ gold
-// DEBUG: set AURA_STAGE_MS = 10000 in console for 10s stages
+// Loaded from /api/config (staging: 10s, prod: 30min)
 
-let AURA_STAGE_MS = 1800000; // 30min per stage
+let AURA_STAGE_MS = 1800000; // default prod value, overridden by /api/config
+
+// Fetch env-aware config from server
+fetch('/api/config').then(r => r.json()).then(cfg => {
+  if (cfg.auraStageMs) AURA_STAGE_MS = cfg.auraStageMs;
+  console.log(`[CONFIG] env=${cfg.env}, auraStageMs=${AURA_STAGE_MS}`);
+}).catch(() => {});
 
 const AURA_COLORS = [
   null,                  // stage 0: hidden
@@ -4391,11 +4718,12 @@ function drawFocusAura(player) {
 // ============================================================
 
 function playPurr() {
+  if (!soundEnabled) return;
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (!musicGain) {
       musicGain = audioCtx.createGain();
-      musicGain.gain.value = volumeSlider.value / 100 * 0.3;
+      musicGain.gain.value = cachedVolume * 0.3;
       musicGain.connect(audioCtx.destination);
     }
   }
@@ -4456,173 +4784,38 @@ function getTimePeriodForHour(h) {
 
 function showOverlapSelector(players, screenX, screenY) {
   hidePlayerCard();
-  const sel = document.getElementById("player-overlap-selector");
-  const title = document.getElementById("overlap-title");
-  const list = document.getElementById("overlap-list");
-  title.textContent = t("selectPlayer");
-  list.innerHTML = "";
-  players.forEach(({ id }) => {
-    const p = otherPlayers[id];
-    if (!p) return;
-    const item = document.createElement("div");
-    item.className = "overlap-item";
-    const cvs = document.createElement("canvas");
-    drawCharHeadPreview(cvs, p.character || hashCharacter(id));
-    const nameSpan = document.createElement("span");
-    nameSpan.textContent = p.name || "???";
-    item.appendChild(cvs);
-    item.appendChild(nameSpan);
-    item.addEventListener("click", (e) => {
-      e.stopPropagation();
-      hideOverlapSelector();
-      showPlayerCard(id);
-    });
-    list.appendChild(item);
-  });
-  sel.style.display = "flex";
-  // Position near click
-  const rect = sel.getBoundingClientRect();
-  const w = 180, h = 30 + players.length * 34;
-  let left = screenX + 10;
-  let top = screenY - h / 2;
-  if (left + w > window.innerWidth) left = screenX - w - 10;
-  if (left < 4) left = 4;
-  if (top < 4) top = 4;
-  if (top + h > window.innerHeight - 4) top = window.innerHeight - h - 4;
-  sel.style.left = left + "px";
-  sel.style.top = top + "px";
+  storeSet("ui", "setOverlapSelectorTarget", { players: players.map(p => ({ id: p.id, name: (p.id === myId ? localPlayer?.name : otherPlayers[p.id]?.name) || "???" })), x: screenX, y: screenY });
 }
 
 function hideOverlapSelector() {
-  document.getElementById("player-overlap-selector").style.display = "none";
+  storeSet("ui", "setOverlapSelectorTarget", null);
 }
 
 function showPlayerCard(targetId) {
   hideOverlapSelector();
   playerCardTarget = targetId;
-  const p = otherPlayers[targetId];
+  const p = targetId === myId ? localPlayer : otherPlayers[targetId];
   if (!p) return;
-  playerCardOpenPos = { x: p.x, y: p.y };
-
-  // Fill card content
-  const card = document.getElementById("player-card");
-  const avatarCanvas = document.getElementById("player-card-avatar");
-  drawCharHeadPreview(avatarCanvas, p.character || hashCharacter(targetId));
-
-  document.getElementById("player-card-name").textContent = p.name || "???";
-
-  // Timezone — in header, no label, e.g. "🌅 Morning (5:00-8:00)"
-  const tzEl = document.getElementById("player-card-timezone");
-  if (p.timezoneHour != null) {
-    const tp = getTimePeriodForHour(p.timezoneHour);
-    tzEl.textContent = tp.emoji + " " + t(tp.key);
-  } else {
-    tzEl.textContent = "";
+  // Ensure self player data is in React store (may be missing due to load timing)
+  if (targetId === myId) {
+    if (localPlayer.timezoneHour == null) localPlayer.timezoneHour = new Date().getHours();
+    storeSet("game", "updatePlayer", myId, localPlayer);
   }
-
-  // Languages — pill badges reusing LANG_DISPLAY labels
-  const langContainer = document.getElementById("player-card-languages");
-  langContainer.innerHTML = "";
-  (p.languages || []).forEach(l => {
-    const pill = document.createElement("span");
-    pill.className = "player-card-lang-pill";
-    pill.textContent = LANG_DISPLAY[l] || l;
-    langContainer.appendChild(pill);
-  });
-
-  // Tagline — direct display, up to 2 lines
-  document.getElementById("player-card-tagline").textContent = p.tagline || "";
-
-  card.style.display = "block";
-  positionPlayerCard();
-  trackPlayerCardPosition();
+  playerCardOpenPos = { x: p.x, y: p.y };
+  // Convert game coords to screen coords for CSS positioning
+  const screen = gameToScreen(p.x, p.y - 40);
+  storeSet("ui", "setPlayerCardTarget", { id: targetId, x: screen.x, y: screen.y });
 }
 
 function hidePlayerCard() {
-  document.getElementById("player-card").style.display = "none";
   playerCardTarget = null;
   playerCardOpenPos = null;
   playerCardLastScreen = null;
+  storeSet("ui", "setPlayerCardTarget", null);
   if (playerCardRAF) {
     cancelAnimationFrame(playerCardRAF);
     playerCardRAF = null;
   }
-}
-
-function positionPlayerCard() {
-  const p = otherPlayers[playerCardTarget];
-  if (!p) { hidePlayerCard(); return; }
-  const card = document.getElementById("player-card");
-  const inner = document.getElementById("player-card-inner");
-  const arrow = document.getElementById("player-card-arrow");
-  const screen = gameToScreen(p.x, p.y);
-  const cardW = inner.offsetWidth || 180;
-  const cardH = inner.offsetHeight || 100;
-  const arrowH = 8;
-  const abovePlayer = -48;
-
-  let left = screen.x - cardW / 2;
-  let top = screen.y + abovePlayer - cardH - arrowH;
-  let flipped = false;
-
-  // Flip below if not enough space above
-  if (top < 4) {
-    top = screen.y + 24;
-    flipped = true;
-  }
-
-  // Clamp horizontal
-  if (left < 4) left = 4;
-  if (left + cardW > window.innerWidth - 4) left = window.innerWidth - cardW - 4;
-
-  card.style.left = left + "px";
-  card.style.top = top + "px";
-  card.style.width = cardW + "px";
-  card.style.height = (cardH + arrowH) + "px";
-
-  // Arrow absolutely positioned, pointing at player center
-  const arrowLeft = Math.max(12, Math.min(cardW - 28, screen.x - left - 8));
-  arrow.style.left = arrowLeft + "px";
-  if (flipped) {
-    arrow.style.top = "0";
-    arrow.style.bottom = "";
-    arrow.style.borderTop = "none";
-    arrow.style.borderBottom = "8px solid rgba(22,33,62,0.94)";
-    inner.style.marginTop = arrowH + "px";
-    inner.style.marginBottom = "";
-  } else {
-    arrow.style.top = "";
-    arrow.style.bottom = "0";
-    arrow.style.borderBottom = "none";
-    arrow.style.borderTop = "8px solid rgba(22,33,62,0.94)";
-    inner.style.marginTop = "";
-    inner.style.marginBottom = "";
-  }
-}
-
-function trackPlayerCardPosition() {
-  if (!playerCardTarget) return;
-  const p = otherPlayers[playerCardTarget];
-  if (!p || p.room !== currentRoom) {
-    hidePlayerCard();
-    return;
-  }
-  // Dismiss if player moved too far from where card was opened
-  if (playerCardOpenPos) {
-    const dx = p.x - playerCardOpenPos.x;
-    const dy = p.y - playerCardOpenPos.y;
-    if (dx * dx + dy * dy > 80 * 80) {
-      hidePlayerCard();
-      return;
-    }
-  }
-  // Only reposition if screen coords changed (camera moved or player moved)
-  const screen = gameToScreen(p.x, p.y);
-  if (!playerCardLastScreen || screen.x !== playerCardLastScreen.x || screen.y !== playerCardLastScreen.y) {
-    playerCardLastScreen = screen;
-    positionPlayerCard();
-  }
-  playerCardRAF = requestAnimationFrame(trackPlayerCardPosition);
 }
 
 const REACTION_PAIR_COOLDOWN = 30000;
@@ -4643,35 +4836,26 @@ function sendReaction(emoji) {
 }
 
 function showReactionRateLimitHint() {
-  const data = {
-    senderId: myId,
-    senderName: t("system"),
-    targetId: myId,
-    targetName: "",
-    emoji: "",
-    room: currentRoom,
-    timestamp: Date.now(),
-  };
-  if (currentRoom === "rest") {
-    const chatMsgs = document.getElementById("chat-messages");
-    const div = document.createElement("div");
-    div.className = "chat-msg";
-    const d = new Date();
-    const ts = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-    div.innerHTML = `<span class="chat-time">${ts}</span> <span class="chat-text" style="color:#777">${t("reactionRateLimit")}</span>`;
-    chatMsgs.appendChild(div);
-    chatMsgs.scrollTop = chatMsgs.scrollHeight;
-  } else {
-    const id = ++reactionNotifIdCounter;
-    const text = `<span style="color:#777">${t("reactionRateLimit")}</span>`;
-    reactionNotifications.push({ id, text, timestamp: Date.now() });
-    if (reactionNotifications.length > 10) reactionNotifications.shift();
-    updateNotificationPanel();
-  }
+  const id = ++reactionNotifIdCounter;
+  const text = `<span style="color:#777">${t("reactionRateLimit")}</span>`;
+  reactionNotifications.push({ id, text, timestamp: Date.now() });
+  if (reactionNotifications.length > 10) reactionNotifications.shift();
+  updateNotificationPanel();
+}
+
+const PROFESSION_COLORS_GAME = {
+  tech: "#5EB8E0", creative: "#D4908C", business: "#D4A830",
+  student: "#6DC06D", educator: "#4DC0B0", freelance: "#B0C8DC", mystery: "#A888D0",
+};
+
+function getProfessionColor(id) {
+  const p = (id === myId) ? localPlayer : otherPlayers[id];
+  const prof = p && p.profession ? p.profession : "mystery";
+  return PROFESSION_COLORS_GAME[prof] || PROFESSION_COLORS_GAME.mystery;
 }
 
 function coloredName(name, id) {
-  return `<span style="color:${lightenColor(hashColor(id), 0.35)};font-weight:bold">[${escapeHtml(name)}]</span>`;
+  return `<span style="color:${getProfessionColor(id)};font-weight:bold">[${escapeHtml(name)}]</span>`;
 }
 
 function buildReactionText(data) {
@@ -4686,25 +4870,8 @@ function buildReactionText(data) {
 }
 
 function showReactionNotification(data) {
-  if (currentRoom === "rest") {
-    // In Lounge: show as system message in chat panel
-    addReactionChatMessage(data);
-  } else {
-    // In Focus Zone: show in bottom-left notification panel
-    addReactionToPanel(data);
-  }
-}
-
-function addReactionChatMessage(data) {
-  const chatMsgs = document.getElementById("chat-messages");
-  const div = document.createElement("div");
-  div.className = "chat-msg";
-  const d = new Date(data.timestamp);
-  const timeStr = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-  const text = buildReactionText(data);
-  div.innerHTML = `<span class="chat-time">${timeStr}</span> <span class="chat-text">${text}</span>`;
-  chatMsgs.appendChild(div);
-  chatMsgs.scrollTop = chatMsgs.scrollHeight;
+  // Both rooms: show in notification panel (React chat handles its own display)
+  addReactionToPanel(data);
 }
 
 function addReactionToPanel(data) {
@@ -4743,11 +4910,6 @@ function updateNotificationPanel() {
   });
 }
 
-// Player card close button (mobile)
-document.getElementById("player-card-close").addEventListener("click", (e) => {
-  e.stopPropagation();
-  hidePlayerCard();
-});
 
 // Bind emoji button clicks (player card reactions)
 document.querySelectorAll("#player-card-reactions .emoji-btn").forEach(btn => {
@@ -4761,10 +4923,10 @@ document.querySelectorAll("#player-card-reactions .emoji-btn").forEach(btn => {
 document.addEventListener("click", (e) => {
   const card = document.getElementById("player-card");
   const sel = document.getElementById("player-overlap-selector");
-  if (card.style.display !== "none" && card.style.display !== "" && !card.contains(e.target)) {
+  if (card && card.style.display !== "none" && card.style.display !== "" && !card.contains(e.target)) {
     hidePlayerCard();
   }
-  if (sel.style.display !== "none" && sel.style.display !== "" && !sel.contains(e.target)) {
+  if (sel && sel.style.display !== "none" && sel.style.display !== "" && !sel.contains(e.target)) {
     hideOverlapSelector();
   }
 });
@@ -4780,8 +4942,11 @@ canvas.addEventListener("mousemove", (e) => {
   mouseGameX = x;
   mouseGameY = y;
   let found = null;
-  for (const id in otherPlayers) {
-    const p = otherPlayers[id];
+  // Check other players + self
+  const allP = { ...otherPlayers };
+  if (localPlayer && myId) allP[myId] = localPlayer;
+  for (const id in allP) {
+    const p = allP[id];
     if (p.room !== currentRoom) continue;
     const dx = x - p.x;
     const dy = y - p.y;
@@ -4804,32 +4969,47 @@ canvas.addEventListener("click", (e) => {
   const { x: clickX, y: clickY } = screenToGame(e.clientX, e.clientY);
 
   // If card or selector is open, close it (unless we clicked another player)
-  const cardOpen = document.getElementById("player-card").style.display === "block";
-  const selectorOpen = document.getElementById("player-overlap-selector").style.display === "flex";
+  const cardEl = document.getElementById("player-card");
+  const selEl = document.getElementById("player-overlap-selector");
+  const cardOpen = cardEl ? cardEl.style.display === "block" : !!playerCardTarget;
+  const selectorOpen = selEl ? selEl.style.display === "flex" : false;
 
   // Check for player click — collect ALL matched players in hit area
-  const matchedPlayers = [];
+  const matchedOthers = [];
+  let selfHit = false;
   for (const id in otherPlayers) {
     const p = otherPlayers[id];
     if (p.room !== currentRoom) continue;
     const dx = clickX - p.x;
     const dy = clickY - p.y;
-    // Rectangular hit area: ±25 horizontal, -40 to +15 vertical (covers name label above head down to feet)
     if (Math.abs(dx) < 25 && dy > -40 && dy < 15) {
       const dist = Math.abs(dx) + Math.abs(dy);
-      matchedPlayers.push({ id, dist });
+      matchedOthers.push({ id, dist });
+    }
+  }
+  // Check self hit
+  if (localPlayer && myId) {
+    const dx = clickX - localPlayer.x;
+    const dy = clickY - localPlayer.y;
+    if (Math.abs(dx) < 25 && dy > -40 && dy < 15) {
+      selfHit = true;
     }
   }
   // Sort by distance so closest is first
-  matchedPlayers.sort((a, b) => a.dist - b.dist);
+  matchedOthers.sort((a, b) => a.dist - b.dist);
 
-  if (matchedPlayers.length === 1) {
+  // Prefer other players over self; only show self card when no others matched
+  if (matchedOthers.length === 1) {
     e.stopPropagation();
-    showPlayerCard(matchedPlayers[0].id);
+    showPlayerCard(matchedOthers[0].id);
     return;
-  } else if (matchedPlayers.length > 1) {
+  } else if (matchedOthers.length > 1) {
     e.stopPropagation();
-    showOverlapSelector(matchedPlayers, e.clientX, e.clientY);
+    showOverlapSelector(matchedOthers, e.clientX, e.clientY);
+    return;
+  } else if (selfHit) {
+    e.stopPropagation();
+    showPlayerCard(myId);
     return;
   }
 
@@ -4844,13 +5024,13 @@ canvas.addEventListener("click", (e) => {
   const mapObjs = ROOM_DATA[currentRoom].mapObjects;
   if (mapObjs && mapObjs.length && Date.now() > petInteractTimer) {
     for (const obj of mapObjs) {
-      if (obj.type !== "pet") continue;
+      if (obj.type !== "pet" && obj.type !== "animal") continue;
       const ts = findTilesetForGID(obj.gid);
       if (!ts) continue;
       const cx = obj.x + ts.tileW / 2;
       const cy = obj.y + ts.tileH / 2;
       if (Math.abs(clickX - cx) < ts.tileW / 2 + 4 && Math.abs(clickY - cy) < ts.tileH / 2 + 4) {
-        if (localPlayer && localPlayer.name === obj.allowedPlayer) {
+        if (localPlayer && (!obj.allowedPlayer || localPlayer.name === obj.allowedPlayer)) {
           spawnOneHeart(cx, obj.y);
           playPurr();
         }
@@ -4883,7 +5063,7 @@ socket.on("catPetted", (data) => {
     playPurr();
     if (soundEnabled && Date.now() > catMeowCooldown) {
       catMeowAudio.currentTime = 0;
-      catMeowAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+      catMeowAudio.volume = SOUND_MAX_VOL * (cachedVolume);
       catMeowAudio.play().catch(() => {});
       catMeowCooldown = Date.now() + 5000;
       catMiuTimer = 180;
@@ -4952,6 +5132,7 @@ function showMoveHint() {
   el.style.display = "block";
   // Fade in after a short delay
   setTimeout(() => { el.style.opacity = "1"; }, 500);
+  window.__hints?.showMove?.();
 }
 function hideMoveHint() {
   const el = document.getElementById("move-hint");
@@ -4959,6 +5140,7 @@ function hideMoveHint() {
   el.style.opacity = "0";
   setTimeout(() => { el.style.display = "none"; }, 500);
   if (moveHintTimer) { clearTimeout(moveHintTimer); moveHintTimer = null; }
+  window.__hints?.hideMove?.();
 }
 
 let focusPortalPending = false;
@@ -4971,8 +5153,8 @@ let localSitting = false; // local player sitting state
 // ============================================================
 
 document.addEventListener("keydown", (e) => {
-  // Don't capture keys when typing in inputs
-  if (e.target.id === "chat-input" || e.target.id === "name-input" || e.target.id === "tagline-input" || e.target.id === "focus-task-input" || e.target.id === "welcome-name" || e.target.id === "welcome-tagline" || e.target.id === "auth-username" || e.target.id === "auth-password") return;
+  // Don't capture keys when typing in inputs (covers both old DOM IDs and React inputs)
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT" || e.target.isContentEditable) return;
 
   // Reset idle timer and cancel auto-walk / post-focus / daydreaming state
   lastKeyPressTime = Date.now();
@@ -5000,6 +5182,12 @@ document.addEventListener("keydown", (e) => {
 
   // E to toggle sit/stand (like most PC games)
   if ((e.key === "e" || e.key === "E") && localPlayer) {
+    // Bulletin board interaction (highest priority after focus popup checks)
+    const bb = getNearestBulletinBoard();
+    if (bb && bb.dist <= BULLETIN_INTERACT_DIST) {
+      openBulletinPopup();
+      return;
+    }
     const camp = getNearestCampfire();
     if (camp && camp.dist <= CAMPFIRE_INTERACT_DIST) {
       socket.emit("toggleCampfire", { id: camp.id, x: localPlayer.x, y: localPlayer.y });
@@ -5041,7 +5229,7 @@ document.addEventListener("keyup", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key) &&
-      e.target.id !== "chat-input" && e.target.id !== "name-input" && e.target.id !== "tagline-input" && e.target.id !== "focus-task-input" && e.target.id !== "welcome-name" && e.target.id !== "welcome-tagline" && e.target.id !== "auth-username" && e.target.id !== "auth-password") {
+      e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "SELECT" && !e.target.isContentEditable) {
     e.preventDefault();
   }
 });
@@ -5050,27 +5238,7 @@ document.addEventListener("keydown", (e) => {
 // UI CONTROLS
 // ============================================================
 
-const nameInput = document.getElementById("name-input");
-const taglineInput = document.getElementById("tagline-input");
-const statusSelect = document.getElementById("status-select");
-const onlineTotal = document.getElementById("online-total");
-const onlineCount = document.getElementById("online-count");
-const onlineFocus = document.getElementById("online-focus");
-const onlineLounge = document.getElementById("online-lounge");
-const roomLabel = document.getElementById("room-label");
-const chatWrap = document.getElementById("chat-wrap");
-const chatPanel = document.getElementById("chat-panel");
-const chatMessages = document.getElementById("chat-messages");
-const chatInput = document.getElementById("chat-input");
-const chatSend = document.getElementById("chat-send");
-const musicToggle = document.getElementById("music-toggle");
-const volumeSlider = document.getElementById("volume-slider");
-const settingsLangTags = document.getElementById("settings-lang-tags");
-const settingsTimeDisplay = document.getElementById("settings-time-display");
-const settingsPanel = document.getElementById("settings-panel");
-const profileTrigger = document.getElementById("profile-trigger");
-const settingsIcon = document.getElementById("settings-icon");
-const settingsDetail = document.getElementById("settings-detail");
+let cachedVolume = 0.5;
 const miniPiPToggle = document.getElementById("mini-pip-toggle");
 const supportsDocumentPiP = !!(window.documentPictureInPicture && window.documentPictureInPicture.requestWindow);
 let miniPiPWindow = null;
@@ -5120,6 +5288,8 @@ function saveMiniShowSections() {
   } catch (_) {}
 }
 
+
+// Used by miniPiP window to build online detail segments
 function setOnlineDetailSegment(el, emoji, label, count) {
   if (!el) return;
   const ownerDoc = el.ownerDocument || document;
@@ -5218,8 +5388,9 @@ function drawMiniAvatar(ctx2d, player, x, y, size) {
 
   // Soft background to help the avatar stand out on the map.
   const bgR = radius + 2;
+  const isFollowedPlayer = !isSelf && (player._userId ? isFollowed(player._userId) : isFollowed(player.id));
   ctx2d.save();
-  ctx2d.fillStyle = isSelf ? "rgba(255,255,255,0.25)" : "rgba(77,166,255,0.22)";
+  ctx2d.fillStyle = isSelf ? "rgba(255,255,255,0.25)" : (isFollowedPlayer ? "rgba(255,143,171,0.25)" : "rgba(77,166,255,0.22)");
   ctx2d.beginPath();
   ctx2d.arc(x, y, bgR, 0, Math.PI * 2);
   ctx2d.fill();
@@ -5242,7 +5413,7 @@ function drawMiniAvatar(ctx2d, player, x, y, size) {
   }
   ctx2d.restore();
 
-  ctx2d.strokeStyle = isSelf ? "#ffffff" : "#4DA6FF";
+  ctx2d.strokeStyle = isSelf ? NAME_COLORS.self : (isFollowedPlayer ? NAME_COLORS.followed : NAME_COLORS.others);
   ctx2d.lineWidth = 2;
   ctx2d.beginPath();
   ctx2d.arc(x, y, radius + 0.5, 0, Math.PI * 2);
@@ -5356,7 +5527,7 @@ function drawMiniRoomMap(room, canvas, players) {
   ctx2d.beginPath();
   ctx2d.rect(2, 2, Math.max(0, cssW - 4), Math.max(0, cssH - 4));
   ctx2d.clip();
-  ctx2d.font = "14px 'MiSans', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+  ctx2d.font = f(14, false);
   ctx2d.textBaseline = "middle";
   ctx2d.textAlign = "left";
 
@@ -5385,6 +5556,18 @@ function buildMiniPiPWindow(win) {
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>${t("online")}</title>
     <style>
+      @font-face {
+        font-family: 'FusionPixel';
+        src: url('/fonts/fusion-pixel-12px-proportional-zh_hans.otf.woff2') format('woff2');
+        unicode-range: U+4E00-9FFF, U+3400-4DBF, U+3000-303F, U+FF00-FFEF, U+2000-206F;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'FusionPixel';
+        src: url('/fonts/fusion-pixel-12px-proportional-latin.otf.woff2') format('woff2');
+        unicode-range: U+0000-024F, U+1E00-1EFF, U+2100-214F, U+2200-22FF;
+        font-display: swap;
+      }
       :root {
         color-scheme: dark;
         --mini-pad: ${MINI_PANEL_PADDING}px;
@@ -5392,6 +5575,7 @@ function buildMiniPiPWindow(win) {
         --mini-map-max: ${MINI_MAP_MAX_W}px;
       }
       * { box-sizing: border-box; }
+      button, input, select, textarea { font-family: inherit; }
       body {
         margin: 0;
         min-height: 100vh;
@@ -5400,7 +5584,7 @@ function buildMiniPiPWindow(win) {
           radial-gradient(90% 90% at 0% 100%, rgba(232,180,248,0.16) 0%, rgba(25,26,37,0) 62%),
           #191a25;
         color: #eee;
-        font-family: "MiSans", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-family: ${currentFont()};
         font-size: 14px;
       }
       #mini-card {
@@ -5531,7 +5715,6 @@ function buildMiniPiPWindow(win) {
         border-radius: 4px;
         padding: 8px 28px 8px 12px;
         height: 32px;
-        font-family: inherit;
         font-size: 14px;
         line-height: 1;
         min-width: 112px;
@@ -5543,7 +5726,6 @@ function buildMiniPiPWindow(win) {
         border-radius: 4px;
         padding: 8px 12px;
         height: 32px;
-        font-family: inherit;
         font-size: 14px;
         line-height: 1;
         min-width: 130px;
@@ -5563,7 +5745,6 @@ function buildMiniPiPWindow(win) {
         padding: 8px 12px;
         height: 32px;
         width: 100%;
-        font-family: inherit;
         font-size: 14px;
         font-weight: 600;
         line-height: 1;
@@ -5862,9 +6043,15 @@ function applyMiniSectionVisibility(doc) {
   const stateEl = doc.getElementById("mini-head");
   const timerEl = doc.getElementById("mini-focus-block");
   const mapEl = doc.getElementById("mini-map-wrap");
+  const inLounge = currentRoom === "rest";
   if (stateEl) stateEl.style.display = miniShowSections.state ? "flex" : "none";
-  if (timerEl) timerEl.style.display = miniShowSections.timer ? "flex" : "none";
+  if (timerEl) timerEl.style.display = (!inLounge && miniShowSections.timer) ? "flex" : "none";
   if (mapEl) mapEl.style.display = miniShowSections.map ? "flex" : "none";
+  // Hide timer filter option in Lounge
+  const timerFilterLabel = doc.getElementById("mini-show-timer");
+  if (timerFilterLabel && timerFilterLabel.parentElement) {
+    timerFilterLabel.parentElement.style.display = inLounge ? "none" : "";
+  }
 }
 
 let _miniAutoResizing = false;
@@ -5944,205 +6131,40 @@ setInterval(() => {
 }, 300);
 
 function closeSettingsPanel() {
-  if (settingsPanel) settingsPanel.classList.remove("open");
-}
-
-// Auth UI update
-function updateAuthUI() {
-  const authSection = document.getElementById("settings-auth-section");
-  if (!authSection) return;
-  if (isRegistered && authUsername) {
-    authSection.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;">
-      <span style="color:#7ec8e3;font-size:14px;">${t("authLoggedInAs")} <b>${authUsername}</b></span>
-      <button id="auth-logout-btn" style="background:#0f1b38;color:#e74c3c;border:1px solid #0f3460;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:bold;">${t("authLogout")}</button>
-    </div>`;
-    document.getElementById("auth-logout-btn")?.addEventListener("click", handleLogout);
-  } else {
-    authSection.innerHTML = `<div style="display:flex;gap:8px;">
-      <button id="auth-login-link" style="flex:1;background:#16213e;color:#7ec8e3;border:1px solid #0f3460;padding:6px 8px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:bold;">${t("authLogin")}</button>
-      <button id="auth-register-link" style="flex:1;background:#16213e;color:#f5a623;border:1px solid #0f3460;padding:6px 8px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:bold;">${t("authRegister")}</button>
-    </div>`;
-    document.getElementById("auth-login-link")?.addEventListener("click", () => showAuthForm("login"));
-    document.getElementById("auth-register-link")?.addEventListener("click", () => showAuthForm("register"));
-  }
-  // Update welcome popup auth links
-  const welcomeAuthLinks = document.getElementById("welcome-auth-links");
-  if (welcomeAuthLinks) {
-    welcomeAuthLinks.style.display = isRegistered ? "none" : "flex";
-  }
+  storeSet("ui", "setSettingsOpen", false);
 }
 
 function showAuthForm(mode) {
-  const popup = document.getElementById("auth-popup");
-  if (!popup) return;
-  const title = mode === "login" ? t("authLogin") : t("authRegister");
-  popup.querySelector(".auth-popup-title").textContent = title;
-  popup.querySelector("#auth-submit").textContent = t("authSubmit");
-  popup.querySelector("#auth-back").textContent = t("authBack");
-  popup.querySelector("#auth-username").placeholder = t("authUsername");
-  popup.querySelector("#auth-password").placeholder = t("authPassword");
-  popup.dataset.mode = mode;
-  popup.querySelector("#auth-username").value = "";
-  popup.querySelector("#auth-password").value = "";
-  popup.querySelector("#auth-error").textContent = "";
-  popup.style.display = "flex";
-  popup.querySelector("#auth-username").focus();
-  closeSettingsPanel();
+  storeSet("ui", "setAuthOpen", true, mode);
 }
 
 function hideAuthForm() {
-  const popup = document.getElementById("auth-popup");
-  if (popup) popup.style.display = "none";
+  storeSet("ui", "setAuthOpen", false);
 }
 
-async function submitAuthForm() {
-  const popup = document.getElementById("auth-popup");
-  if (!popup) return;
-  const mode = popup.dataset.mode;
-  const username = popup.querySelector("#auth-username").value.trim();
-  const password = popup.querySelector("#auth-password").value;
-  const errorEl = popup.querySelector("#auth-error");
-
-  if (!username || !password) { errorEl.textContent = t("authErrRequired"); return; }
-  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) { errorEl.textContent = t("authErrShortUser"); return; }
-  if (password.length < 6) { errorEl.textContent = t("authErrShortPass"); return; }
-
-  errorEl.textContent = "";
-  const submitBtn = popup.querySelector("#auth-submit");
-  submitBtn.disabled = true;
-
-  try {
-    let result;
-    if (mode === "register") {
-      // Include current profile data for migration
-      const profileData = {
-        name: localPlayer?.name || localStorage.getItem("playerName") || "Anonymous",
-        character: localPlayer?.character || selectedCharConfig,
-        tagline: localPlayer?.tagline || localStorage.getItem("playerTagline") || "",
-        languages: localPlayer?.languages || JSON.parse(localStorage.getItem("playerLanguages") || "[]"),
-      };
-      result = await apiRegister(username, password, profileData);
-    } else {
-      result = await apiLogin(username, password);
-    }
-
-    if (result.ok) {
-      hideAuthForm();
-      handleAuthSuccess(result.token, result.username || username, result.profile);
-    } else {
-      errorEl.textContent = result.error || t("authErrNetwork");
-    }
-  } catch (e) {
-    errorEl.textContent = t("authErrNetwork");
-  } finally {
-    submitBtn.disabled = false;
-  }
-}
-
-if (settingsPanel && settingsIcon && settingsDetail) {
-  if (profileTrigger) {
-    profileTrigger.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openWelcomeEditorFromSettings();
-    });
-  }
-  settingsIcon.addEventListener("click", (e) => {
-    e.stopPropagation();
-    settingsPanel.classList.toggle("open");
-  });
-
-  settingsDetail.addEventListener("click", (e) => {
-    e.stopPropagation();
-  });
-  document.addEventListener("click", (e) => {
-    if (!settingsPanel.contains(e.target)) closeSettingsPanel();
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeSettingsPanel();
-  });
-}
-
-nameInput.addEventListener("change", () => {
-  const name = nameInput.value.trim();
-  if (name && localPlayer) {
-    localPlayer.name = name;
-    socket.emit("setName", name);
-    localStorage.setItem("playerName", name);
-  }
-});
-
-// Welcome popup for first-time users
-const welcomePopup = document.getElementById("welcome-popup");
-const welcomeNameInput = document.getElementById("welcome-name");
-const welcomeTaglineInput = document.getElementById("welcome-tagline");
-const welcomeEnter = document.getElementById("welcome-enter");
-const welcomeLangTags = document.getElementById("welcome-lang-tags");
-const welcomeTimeDisplay = document.getElementById("welcome-time-display");
-const welcomeLangLabel = document.getElementById("welcome-lang-label");
 const savedName = localStorage.getItem("playerName");
 let editingFromSettings = false;
 
 function openWelcomeEditorFromSettings() {
   editingFromSettings = true;
-  closeSettingsPanel();
-  if (welcomeNameInput) welcomeNameInput.value = (localPlayer && localPlayer.name) || localStorage.getItem("playerName") || "";
-  if (welcomeTaglineInput) welcomeTaglineInput.value = savedTagline || "";
-  updateCharCounter(welcomeNameInput, "welcome-name-counter", "name");
-  updateCharCounter(welcomeTaglineInput, "welcome-tagline-counter", "tagline");
-  renderAllLanguageTags();
-  updateWelcomeTimeDisplay();
-  welcomePopup.classList.remove("hidden");
-  if (welcomeNameInput) welcomeNameInput.focus();
+  storeSet("ui", "setWelcomeOpen", true);
 }
 
 function syncTagline(tagline) {
   savedTagline = tagline;
   localStorage.setItem("playerTagline", tagline);
-  if (welcomeTaglineInput && document.activeElement !== welcomeTaglineInput) welcomeTaglineInput.value = tagline;
-  if (taglineInput && document.activeElement !== taglineInput) taglineInput.value = tagline;
   if (localPlayer) {
     localPlayer.tagline = tagline;
     socket.emit("setTagline", tagline);
   }
-  updateCharCounter(welcomeTaglineInput, "welcome-tagline-counter", "tagline");
-  updateCharCounter(taglineInput, "tagline-input-counter", "tagline");
-}
-
-function renderLanguageTags(container) {
-  if (!container) return;
-  container.querySelectorAll(".lang-tag").forEach(btn => {
-    btn.classList.toggle("selected", selectedLanguages.includes(btn.dataset.lang));
-  });
-}
-
-function renderAllLanguageTags() {
-  renderLanguageTags(welcomeLangTags);
-  renderLanguageTags(settingsLangTags);
 }
 
 function syncLanguages() {
   localStorage.setItem("playerLanguages", JSON.stringify(selectedLanguages));
-  renderAllLanguageTags();
   if (localPlayer) {
     localPlayer.languages = [...selectedLanguages];
     socket.emit("setLanguages", selectedLanguages);
   }
-}
-
-function bindLanguageTags(container) {
-  if (!container) return;
-  container.querySelectorAll(".lang-tag").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const lang = btn.dataset.lang;
-      if (selectedLanguages.includes(lang)) {
-        if (selectedLanguages.length <= 1) return; // keep at least one
-        selectedLanguages = selectedLanguages.filter(l => l !== lang);
-      } else {
-        selectedLanguages.push(lang);
-      }
-      syncLanguages();
-    });
-  });
 }
 
 function syncTimezoneHour() {
@@ -6153,124 +6175,46 @@ function syncTimezoneHour() {
   }
 }
 
-// Initialize time display
-function updateWelcomeTimeDisplay() {
-  const tp = getTimePeriod();
-  const text = tp.emoji + " " + t(tp.key);
-  if (welcomeTimeDisplay) welcomeTimeDisplay.textContent = text;
-  if (settingsTimeDisplay) settingsTimeDisplay.textContent = text;
-}
-
-bindLanguageTags(welcomeLangTags);
-bindLanguageTags(settingsLangTags);
-renderAllLanguageTags();
-
-if (taglineInput) {
-  taglineInput.value = savedTagline;
-  taglineInput.addEventListener("change", () => {
-    syncTagline(taglineInput.value.trim());
-  });
-  taglineInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      syncTagline(taglineInput.value.trim());
-      taglineInput.blur();
-    }
-  });
-}
-
-// Character counters (CJK = 2, others = 1)
-function displayWidth(str) {
-  let w = 0;
-  for (const ch of str) {
-    const code = ch.codePointAt(0);
-    // CJK Unified, CJK Ext-A/B, Hangul, Kana, fullwidth
-    w += (code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF) ||
-         (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFE30 && code <= 0xFE4F) ||
-         (code >= 0xFF00 && code <= 0xFFEF) || (code >= 0x20000 && code <= 0x2FA1F) ? 2 : 1;
-  }
-  return w;
-}
-
-function truncateToDisplayWidth(str, max) {
-  let w = 0;
-  let i = 0;
-  for (const ch of str) {
-    const code = ch.codePointAt(0);
-    const cw = (code >= 0x2E80 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF) ||
-               (code >= 0xF900 && code <= 0xFAFF) || (code >= 0xFE30 && code <= 0xFE4F) ||
-               (code >= 0xFF00 && code <= 0xFFEF) || (code >= 0x20000 && code <= 0x2FA1F) ? 2 : 1;
-    if (w + cw > max) break;
-    w += cw;
-    i += ch.length;
-  }
-  return str.slice(0, i);
-}
-
-const CHAR_LIMITS = { name: 20, tagline: 100 };
-
-function updateCharCounter(input, counterId, limitKey) {
-  const counter = document.getElementById(counterId);
-  if (!input || !counter) return;
-  const max = CHAR_LIMITS[limitKey] || 0;
-  const w = displayWidth(input.value);
-  if (w > max) {
-    input.value = truncateToDisplayWidth(input.value, max);
-  }
-  const len = displayWidth(input.value);
-  counter.textContent = len + "/" + max;
-  counter.classList.toggle("at-limit", len >= max);
-}
-
-function bindCharCounter(input, counterId, limitKey) {
-  if (!input) return;
-  const update = () => updateCharCounter(input, counterId, limitKey);
-  input.addEventListener("input", update);
-  input.addEventListener("change", update);
-  update(); // initial
-}
-
-bindCharCounter(welcomeNameInput, "welcome-name-counter", "name");
-bindCharCounter(welcomeTaglineInput, "welcome-tagline-counter", "tagline");
-bindCharCounter(nameInput, "name-input-counter", "name");
-bindCharCounter(taglineInput, "tagline-input-counter", "tagline");
-
-updateWelcomeTimeDisplay();
+// Character counter functions removed — React components handle their own char counting
 
 // Debug helpers (console)
 window.setGameTime = (hour) => setDebugTimeHour(hour);
 window.clearGameTime = () => setDebugTimeHour(null);
 window.getGameTime = () => (debugTimeHour !== null && debugTimeHour !== undefined ? debugTimeHour : new Date().getHours());
 
-// Pre-fill tagline
-if (welcomeTaglineInput && savedTagline) {
-  welcomeTaglineInput.value = savedTagline;
-  updateCharCounter(welcomeTaglineInput, "welcome-tagline-counter", "tagline");
-}
-
 if (savedName) {
-  nameInput.value = savedName;
-  updateCharCounter(nameInput, "name-input-counter", "name");
-  welcomePopup.classList.add("hidden");
   hasCheckedIn = true;
+  // React bridge: close React welcome popup for returning users
+  const _closeWelcome = () => {
+    if (window.__stores?.ui) { window.__stores.ui.getState().setWelcomeOpen(false); }
+    else { setTimeout(_closeWelcome, 50); }
+  };
+  setTimeout(_closeWelcome, 0);
   // Send saved data for returning users
   setTimeout(() => {
     if (localPlayer) {
-      if (savedTagline) socket.emit("setTagline", savedTagline);
-      if (selectedLanguages.length) socket.emit("setLanguages", selectedLanguages);
+      if (savedTagline) {
+        localPlayer.tagline = savedTagline;
+        socket.emit("setTagline", savedTagline);
+      }
+      if (selectedLanguages.length) {
+        localPlayer.languages = [...selectedLanguages];
+        socket.emit("setLanguages", selectedLanguages);
+      }
+      if (savedProfession) {
+        localPlayer.profession = savedProfession;
+        socket.emit("setProfession", savedProfession);
+      }
       syncTimezoneHour();
     }
   }, 500);
-} else {
-  welcomeNameInput.focus();
 }
 
-function submitWelcome() {
-  const wasEditing = editingFromSettings;
-  editingFromSettings = false;
-  const name = welcomeNameInput.value.trim();
-  if (!name) return;
-  const tagline = welcomeTaglineInput ? welcomeTaglineInput.value.trim() : "";
-  nameInput.value = name;
+// React bridge: handle welcome enter from React WelcomePopup
+window.__onWelcomeEnter = function(data) {
+  const name = (data.name || "").trim() || "Anonymous";
+  const tagline = (data.tagline || "").trim();
+  const langs = data.languages || ["en"];
   localStorage.setItem("playerName", name);
   localStorage.setItem("charConfig", JSON.stringify(selectedCharConfig));
   if (localPlayer) {
@@ -6279,50 +6223,43 @@ function submitWelcome() {
     socket.emit("setName", name);
     socket.emit("setCharacter", selectedCharConfig);
   }
-  syncTagline(tagline);
-  syncLanguages();
+  savedTagline = tagline;
+  localStorage.setItem("playerTagline", tagline);
+  if (localPlayer) {
+    localPlayer.tagline = tagline;
+    socket.emit("setTagline", tagline);
+  }
+  selectedLanguages = langs;
+  localStorage.setItem("playerLanguages", JSON.stringify(langs));
+  if (localPlayer) {
+    localPlayer.languages = [...langs];
+    socket.emit("setLanguages", langs);
+  }
+  // Birth month
+  const birthMonth = data.birthMonth != null ? data.birthMonth : null;
+  localStorage.setItem("playerBirthMonth", birthMonth != null ? String(birthMonth) : "");
+  if (localPlayer) {
+    localPlayer.birthMonth = birthMonth;
+    socket.emit("setBirthMonth", birthMonth);
+  }
+  // Profession
+  const prof = data.profession || "mystery";
+  savedProfession = prof;
+  localStorage.setItem("playerProfession", prof);
+  if (localPlayer) {
+    localPlayer.profession = prof;
+    socket.emit("setProfession", prof);
+  }
   syncTimezoneHour();
-  welcomePopup.classList.add("hidden");
+  // Sync updated profile to React store immediately
+  if (localPlayer && myId) storeSet("game", "updatePlayer", myId, localPlayer);
+  storeSet("ui", "setWelcomeOpen", false);
   hasCheckedIn = true;
   lastKeyPressTime = Date.now();
-  // Show movement hint on first visit (PC only)
-  if (!wasEditing && !isTouchDevice) {
-    showMoveHint();
-  }
-}
-
-welcomeEnter.addEventListener("click", submitWelcome);
-welcomeNameInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") submitWelcome();
-});
-if (welcomeTaglineInput) {
-  welcomeTaglineInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") submitWelcome();
-  });
-}
-
-// Auth form event listeners
-document.getElementById("welcome-login-btn")?.addEventListener("click", () => showAuthForm("login"));
-document.getElementById("welcome-register-btn")?.addEventListener("click", () => showAuthForm("register"));
-document.getElementById("auth-back")?.addEventListener("click", hideAuthForm);
-document.getElementById("auth-submit")?.addEventListener("click", submitAuthForm);
-document.getElementById("auth-password")?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") submitAuthForm();
-});
-// Initial auth UI state
-updateAuthUI();
-
-statusSelect.addEventListener("change", () => {
-  if (localPlayer) {
-    localPlayer.status = statusSelect.value;
-    socket.emit("setStatus", statusSelect.value);
-    emojiSuppressUntil = 0; // User explicitly chose a status, show it
-  }
-});
+  if (!isTouchDevice) showMoveHint();
+};
 
 // --- Chat ---
-let isComposing = false; // Track IME composition state
-let chatScope = "all"; // tab filter: "all" | "room" | "nearby"
 let sendScope = "room"; // input bar scope: "room" | "nearby"
 
 const CHAT_COOLDOWN_MS = 1500;
@@ -6344,219 +6281,43 @@ function isChatRateLimited() {
   return false;
 }
 
-function showChatRateLimitHint() {
-  const chatMsgs = document.getElementById("chat-messages");
-  const div = document.createElement("div");
-  div.className = "chat-msg chat-system";
-  const d = new Date();
-  const ts = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-  div.innerHTML = `<span class="chat-time">${ts}</span> <span class="chat-name">[${t("system")}]:</span> ${t("chatRateLimit")}`;
-  chatMsgs.appendChild(div);
-  chatMsgs.scrollTop = chatMsgs.scrollHeight;
-}
-
-function sendChat() {
-  const text = chatInput.value.trim();
-  if (!text || currentRoom !== "rest") return;
-  if (isChatRateLimited()) {
-    showChatRateLimitHint();
-    return;
-  }
-  chatSendTimes.push(Date.now());
-  if (chatSendTimes.length > 20) chatSendTimes.splice(0, chatSendTimes.length - 20);
-  socket.emit("chatMessage", { text, scope: sendScope });
-  chatInput.value = "";
-}
-
-chatSend.addEventListener("click", sendChat);
-chatInput.addEventListener("compositionstart", () => { isComposing = true; });
-chatInput.addEventListener("compositionend", () => { isComposing = false; });
-chatInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !isComposing) sendChat();
-});
-
-// --- Chat toggle + unread badge ---
-const chatToggle = document.getElementById("chat-toggle");
-let unreadCount = 0;
-
-chatToggle.addEventListener("click", () => {
-  chatPanel.classList.toggle("collapsed");
-  const collapsed = chatPanel.classList.contains("collapsed");
-  if (!collapsed) {
-    unreadCount = 0;
-    updateChatBadge();
-  }
-  chatToggle.textContent = collapsed ? t("chat") : t("hide");
-});
-
-function updateChatBadge() {
-  const badge = chatToggle.querySelector(".chat-badge");
-  if (unreadCount > 0 && chatPanel.classList.contains("collapsed")) {
-    if (badge) {
-      badge.textContent = unreadCount > 9 ? "9+" : unreadCount;
-    } else {
-      const b = document.createElement("span");
-      b.className = "chat-badge";
-      b.textContent = unreadCount > 9 ? "9+" : unreadCount;
-      chatToggle.appendChild(b);
-    }
-  } else if (badge) {
-    badge.remove();
-  }
-}
-
-// --- Chat scope tabs ---
-function filterChatMessages() {
-  const msgs = chatMessages.querySelectorAll(".chat-msg:not(.chat-system)");
-  for (const el of msgs) {
-    const s = el.dataset.scope;
-    if (!s) { el.style.display = ""; continue; }
-    if (chatScope === "all") el.style.display = "";
-    else if (chatScope === "room") el.style.display = s === "room" ? "" : "none";
-    else if (chatScope === "nearby") el.style.display = s === "nearby" ? "" : "none";
-  }
-  chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-// --- Input bar scope label (independent toggle) ---
-const chatScopeLabel = document.getElementById("chat-scope-label");
-
-function updateScopeLabel() {
-  chatScopeLabel.textContent = sendScope === "nearby" ? t("chatNearby") : t("chatRoom");
-  chatScopeLabel.style.color = sendScope === "nearby" ? "#7ee6a8" : "#ddd";
-}
-
-let nearbyHintShown = false;
-
-function showNearbyHint() {
-  if (nearbyHintShown) return;
-  nearbyHintShown = true;
-  const now = new Date();
-  const ts = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}:${String(now.getSeconds()).padStart(2,"0")}`;
-  const div = document.createElement("div");
-  div.className = "chat-msg chat-hint";
-  div.dataset.scope = "nearby";
-  div.innerHTML = `${ts} <span class="chat-name">[${t("system")}]:</span> ${t("nearbyHint")}`;
-  chatMessages.appendChild(div);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-chatScopeLabel.addEventListener("click", () => {
-  sendScope = sendScope === "room" ? "nearby" : "room";
-  updateScopeLabel();
-  if (sendScope === "nearby") showNearbyHint();
-});
-
-// --- Tab filter (controls which messages are visible) ---
-document.querySelectorAll(".chat-tab").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".chat-tab").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    chatScope = btn.dataset.scope;
-    if (chatScope === "nearby") showNearbyHint();
-    filterChatMessages();
-  });
-});
-
 // --- Chat bubbles above characters ---
 const chatBubbles = {};
 const BUBBLE_DURATION = 5000;
 
 function addChatMessage(msg, isHistory) {
-  // System messages (join/leave)
-  if (msg.type === "system") {
-    const div = document.createElement("div");
-    div.className = "chat-msg chat-system";
-    const actionText = msg.action === "join" ? t("joinedLounge") : t("leftLounge");
-    div.textContent = `${msg.name} ${actionText}`;
-    chatMessages.appendChild(div);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-    return;
-  }
-
-  // Timestamp with seconds
-  const date = new Date(msg.time);
-  const timeStr = `${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}:${String(date.getSeconds()).padStart(2,"0")}`;
-
-  const div = document.createElement("div");
-  const msgScope = msg.scope || "room";
-  div.className = `chat-msg chat-${msgScope}`;
-  div.dataset.scope = msgScope;
-  const scopeLabel = msgScope === "nearby" ? t("chatNearby") : t("chatRoom");
-  div.innerHTML = `${timeStr} [${scopeLabel}] <span class="chat-name">[${escapeHtml(msg.name)}]:</span> ${escapeHtml(msg.text)}`;
-
-  // Filter visibility based on current tab
-  if (chatScope === "room" && msgScope !== "room") div.style.display = "none";
-  else if (chatScope === "nearby" && msgScope !== "nearby") div.style.display = "none";
-
-  chatMessages.appendChild(div);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
-
-  // Chat bubble + unread badge (skip for history)
-  if (!isHistory) {
+  // Chat bubble (skip for history)
+  if (!isHistory && msg.type !== "system") {
+    const msgScope = msg.scope || "room";
     if (msg.id) {
       chatBubbles[msg.id] = { text: msg.text.length > 30 ? msg.text.slice(0, 30) + "..." : msg.text, time: Date.now(), scope: msgScope };
     }
-    if (chatPanel.classList.contains("collapsed")) {
-      unreadCount++;
-      updateChatBadge();
-    }
   }
+  // DOM chat panel now handled by React ChatPanel
 }
 
 function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
+  const el = document.createElement("div");
+  el.textContent = str;
+  return el.innerHTML;
 }
 
 const FOCUS_STATUS_KEYS = ["working", "studying", "reading", "writing", "creating", "exercising", "coding"];
 const REST_STATUS_KEYS = ["resting", "chatting", "listening", "watching", "napping", "snacking", "browsing"];
 
-let roomLabelTimer = null;
-
-function showRoomLabel() {
-  roomLabel.classList.add("visible");
-  clearTimeout(roomLabelTimer);
-  roomLabelTimer = setTimeout(() => {
-    roomLabel.classList.remove("visible");
-  }, 2500);
-}
-
 function updateRoomUI() {
   hidePlayerCard();
   hideOverlapSelector();
-  roomLabel.textContent = currentRoom === "focus" ? t("focusZone") : t("lounge");
-  roomLabel.className = currentRoom; // sets "focus" or "rest"
-  // showRoomLabel adds "visible" after className is set
-  showRoomLabel();
-
-  if (currentRoom === "rest") {
-    chatWrap.classList.add("visible");
-  } else {
-    chatWrap.classList.remove("visible");
-  }
+  storeSet("game", "setRoom", currentRoom);
+  storeSet("chat", "setChatVisible", currentRoom === "rest");
 
   if (currentRoom === "focus") {
-    // Focus Zone: hide status dropdown, set wandering by default
-    statusSelect.style.display = "none";
     if (localPlayer && !isFocusing) {
       localPlayer.status = "wandering";
       socket.emit("setStatus", "wandering");
     }
   } else {
-    // Lounge: show status dropdown with lounge statuses
-    statusSelect.style.display = "";
-    const statusKeys = REST_STATUS_KEYS;
-    statusSelect.innerHTML = "";
-    for (const key of statusKeys) {
-      const opt = document.createElement("option");
-      opt.value = key;
-      opt.textContent = t(key);
-      statusSelect.appendChild(opt);
-    }
     if (localPlayer) {
-      statusSelect.value = "resting";
       localPlayer.status = "resting";
       socket.emit("setStatus", "resting");
       emojiSuppressUntil = 0;
@@ -6570,117 +6331,11 @@ function updateRoomUI() {
 // FOCUS TIMER UI
 // ============================================================
 
-const focusBtn = document.getElementById("focus-btn");
-const focusPopup = document.getElementById("focus-popup");
-const focusConfirm = document.getElementById("focus-confirm");
-const focusCancel = document.getElementById("focus-cancel");
-const focusTaskInput = document.getElementById("focus-task-input");
-const focusTimerDisplay = document.getElementById("focus-timer-display");
-const focusTaskLabel = document.getElementById("focus-task-label");
-const focusTimeValue = document.getElementById("focus-time-value");
-const autowalkHint = document.getElementById("autowalk-hint");
-const categoryBtns = document.querySelectorAll(".focus-cat-btn");
-
 let selectedCategory = "working";
 
-categoryBtns.forEach(btn => {
-  btn.addEventListener("click", () => {
-    categoryBtns.forEach(b => b.classList.remove("selected"));
-    btn.classList.add("selected");
-    selectedCategory = btn.dataset.category;
-  });
-});
-
-focusBtn.addEventListener("click", () => {
-  if (isFocusing) {
-    endFocus();
-  } else {
-    if (currentRoom !== "focus") return;
-    focusPopup.style.display = "flex";
-    categoryBtns.forEach(b => b.classList.remove("selected"));
-    categoryBtns[0].classList.add("selected");
-    selectedCategory = "working";
-    focusTaskInput.value = "";
-    focusTaskInput.focus();
-  }
-});
-
-focusConfirm.addEventListener("click", () => {
-  startFocus(selectedCategory, focusTaskInput.value.trim());
-  focusPopup.style.display = "none";
-});
-
-focusCancel.addEventListener("click", () => {
-  focusPopup.style.display = "none";
-});
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    const authPopup = document.getElementById("auth-popup");
-    if (authPopup && authPopup.style.display !== "none") { hideAuthForm(); return; }
-    if (focusPopup.style.display !== "none") focusPopup.style.display = "none";
-    if (focusPortalConfirm.style.display !== "none") {
-      focusPortalConfirm.style.display = "none";
-      focusPortalPending = false;
-      portalCooldown = 60;
-      // Push player away from portal (same as "No" button)
-      const map = getCurrentMap();
-      if (map && localPlayer) {
-        let sumY = 0, count = 0;
-        for (let r = 0; r < map.length; r++) {
-          for (let c = 0; c < (map[r] ? map[r].length : 0); c++) {
-            if (map[r][c] === PORTAL_TILE) { sumY += r * TILE + TILE / 2; count++; }
-          }
-        }
-        if (count > 0) {
-          const portalY = sumY / count;
-          const midY = map.length * TILE / 2;
-          localPlayer.y = portalY + (portalY < midY ? 2 : -2) * TILE;
-        }
-      }
-    }
-  }
-});
-
-// --- Portal confirm when focusing ---
-const focusPortalConfirm = document.getElementById("focus-portal-confirm");
-const focusPortalYes = document.getElementById("focus-portal-yes");
-const focusPortalNo = document.getElementById("focus-portal-no");
-
 function showFocusPortalConfirm() {
-  focusPortalConfirm.style.display = "flex";
+  storeSet("ui", "setPortalConfirmOpen", true);
 }
-
-focusPortalYes.addEventListener("click", () => {
-  focusPortalConfirm.style.display = "none";
-  focusPortalPending = false;
-  endFocus();
-  // Now trigger the room change
-  const newRoom = currentRoom === "focus" ? "rest" : "focus";
-  socket.emit("changeRoom", newRoom);
-  portalCooldown = 60;
-});
-
-focusPortalNo.addEventListener("click", () => {
-  focusPortalConfirm.style.display = "none";
-  focusPortalPending = false;
-  portalCooldown = 60;
-  // Push player 2 tiles away from portal (into the room)
-  const map = getCurrentMap();
-  if (map && localPlayer) {
-    let sumY = 0, count = 0;
-    for (let r = 0; r < map.length; r++) {
-      for (let c = 0; c < (map[r] ? map[r].length : 0); c++) {
-        if (map[r][c] === PORTAL_TILE) { sumY += r * TILE + TILE / 2; count++; }
-      }
-    }
-    if (count > 0) {
-      const portalY = sumY / count;
-      const midY = map.length * TILE / 2;
-      localPlayer.y = portalY + (portalY < midY ? 2 : -2) * TILE;
-    }
-  }
-});
 
 function getCategoryLabel(category) {
   const map = { working: "catWorking", studying: "catStudying", reading: "catReading", writing: "catWriting", creating: "catCreating", exercising: "catExercising" };
@@ -6708,6 +6363,7 @@ function startFocus(category, taskName) {
 
   socket.emit("startFocus", { category });
   localStorage.setItem("currentFocusTask", focusTaskName);
+  storeSet("focus", "startFocus", category, taskName);
   updateFocusUI();
 }
 
@@ -6722,7 +6378,6 @@ function endFocus() {
   focusCategory = null;
   focusTaskName = "";
   autoWalking = false;
-  autowalkHint.style.display = "none";
   lastKeyPressTime = Date.now();
   postFocusTime = Date.now(); // Start post-focus state
   emojiSuppressUntil = Date.now() + 30000; // Suppress emoji during post-focus
@@ -6737,29 +6392,11 @@ function endFocus() {
 
   socket.emit("endFocus");
   localStorage.removeItem("currentFocusTask");
+  storeSet("focus", "endFocus");
   updateFocusUI();
 }
 
 function updateFocusUI() {
-  if (currentRoom !== "focus") {
-    focusBtn.style.display = "none";
-    focusTimerDisplay.style.display = "none";
-    renderMiniPiPStatus();
-    return;
-  }
-
-  focusBtn.style.display = "";
-
-  if (isFocusing) {
-    focusBtn.textContent = t("endFocus");
-    focusBtn.classList.add("active");
-    focusTimerDisplay.style.display = "flex";
-    focusTaskLabel.textContent = focusTaskName;
-  } else {
-    focusBtn.textContent = t("startFocus");
-    focusBtn.classList.remove("active");
-    focusTimerDisplay.style.display = "none";
-  }
   renderMiniPiPStatus();
 }
 
@@ -6781,39 +6418,42 @@ function formatFocusTime(ms) {
 
 function saveFocusRecord(taskName, category, durationMs, startTimestamp) {
   if (durationMs < 5000) return;
-  const records = JSON.parse(localStorage.getItem("focusHistory") || "[]");
-  records.push({
-    taskName,
+  // Don't store auto-generated category label as taskName
+  const cleanName = (taskName === getCategoryLabel(category)) ? "" : taskName;
+  const record = {
+    taskName: cleanName,
     category,
     duration: durationMs,
     startTime: startTimestamp,
     endTime: Date.now(),
-  });
+  };
+  const records = JSON.parse(localStorage.getItem("focusHistory") || "[]");
+  records.push(record);
   if (records.length > 100) records.splice(0, records.length - 100);
   localStorage.setItem("focusHistory", JSON.stringify(records));
+  // Sync to server (all users have DB rows)
+  if (socket && socket.connected) {
+    socket.emit("saveFocusRecord", record);
+  }
 }
 
 // ============================================================
 // FOCUS HISTORY UI
 // ============================================================
 
-const historyBtn = document.getElementById("history-btn");
-const historyPopup = document.getElementById("history-popup");
 
-historyBtn.addEventListener("click", () => {
-  renderHistoryPanel();
-  historyPopup.style.display = "flex";
-});
-
-document.getElementById("history-close").addEventListener("click", () => {
-  historyPopup.style.display = "none";
-});
-
+// Escape handler for popups (React components handle their own Escape too)
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && historyPopup.style.display !== "none") {
-    historyPopup.style.display = "none";
+  if (e.key === "Escape" && bulletinPopupOpen) {
+    closeBulletinPopup();
   }
 });
+
+// ============================================================
+// WEEKLY RECAP POPUP
+// ============================================================
+
+// openRecapPopup removed — React RecapPopup handles rendering via __onRecapOpen
 
 function getHistoryRecords() {
   try {
@@ -6848,134 +6488,9 @@ function deleteHistoryRecord(startTime) {
     records.splice(idx, 1);
     localStorage.setItem("focusHistory", JSON.stringify(records));
   }
-  renderHistoryPanel();
 }
 
-function getCategoryIcon(category) {
-  const icons = { studying: "\u{1F4D6}", working: "\u{1F4BC}", creating: "\u{1F3A8}", reading: "\u{1F4DA}" };
-  return icons[category] || "\u{1F4D6}";
-}
-
-function renderHistoryPanel() {
-  const records = getHistoryRecords();
-  const todayKey = getDayKey(Date.now());
-
-  // Today summary
-  let todayMs = 0;
-  let todayCount = 0;
-  for (const r of records) {
-    if (getDayKey(r.startTime) === todayKey) {
-      todayMs += r.duration;
-      todayCount++;
-    }
-  }
-  document.getElementById("history-today-time").textContent = formatHistoryDuration(todayMs);
-  const sessionsSpan = document.querySelector(".history-today-sessions");
-  sessionsSpan.innerHTML = "";
-  const countSpan = document.createElement("span");
-  countSpan.id = "history-today-count";
-  countSpan.textContent = todayCount;
-  sessionsSpan.appendChild(countSpan);
-  sessionsSpan.appendChild(document.createTextNode(" " + t("historySessions")));
-
-  // Last 7 days chart
-  const dayTotals = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const key = getDayKey(d.getTime());
-    let total = 0;
-    for (const r of records) {
-      if (getDayKey(r.startTime) === key) total += r.duration;
-    }
-    dayTotals.push({ key, total, label: getDayLabel(key) });
-  }
-
-  const maxMs = Math.max(...dayTotals.map(d => d.total), 1);
-  const chartEl = document.getElementById("history-chart");
-  chartEl.innerHTML = "";
-  for (const day of dayTotals) {
-    const col = document.createElement("div");
-    col.className = "history-bar-col";
-
-    const val = document.createElement("div");
-    val.className = "history-bar-value";
-    if (day.total > 0) {
-      const mins = Math.floor(day.total / 60000);
-      val.textContent = mins >= 60 ? Math.floor(mins / 60) + t("historyH") : mins + "m";
-    }
-    col.appendChild(val);
-
-    const bar = document.createElement("div");
-    bar.className = "history-bar" + (day.key === todayKey ? " today" : "");
-    const pct = day.total > 0 ? Math.max(4, (day.total / maxMs) * 100) : 0;
-    bar.style.height = pct + "%";
-    if (day.total === 0) {
-      bar.style.height = "2px";
-      bar.style.opacity = "0.3";
-    }
-    col.appendChild(bar);
-
-    const lbl = document.createElement("div");
-    lbl.className = "history-bar-label";
-    lbl.textContent = day.label;
-    col.appendChild(lbl);
-
-    chartEl.appendChild(col);
-  }
-
-  // Recent sessions list
-  const listEl = document.getElementById("history-list");
-  listEl.innerHTML = "";
-  if (records.length === 0) {
-    const noData = document.createElement("div");
-    noData.className = "history-no-data";
-    noData.textContent = t("historyNoData");
-    listEl.appendChild(noData);
-    return;
-  }
-
-  const recent = records.slice(-20).reverse();
-  for (const r of recent) {
-    const row = document.createElement("div");
-    row.className = "history-row";
-
-    const icon = document.createElement("span");
-    icon.className = "history-row-icon";
-    icon.textContent = getCategoryIcon(r.category);
-    row.appendChild(icon);
-
-    const info = document.createElement("div");
-    info.className = "history-row-info";
-
-    const task = document.createElement("div");
-    task.className = "history-row-task";
-    task.textContent = r.taskName || getCategoryLabel(r.category);
-    info.appendChild(task);
-
-    const date = document.createElement("div");
-    date.className = "history-row-date";
-    const d = new Date(r.startTime);
-    date.textContent = getDayLabel(getDayKey(r.startTime)) + " " +
-      String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-    info.appendChild(date);
-
-    row.appendChild(info);
-
-    const dur = document.createElement("span");
-    dur.className = "history-row-duration";
-    dur.textContent = formatHistoryDuration(r.duration);
-    row.appendChild(dur);
-
-    const del = document.createElement("button");
-    del.className = "history-row-delete";
-    del.textContent = "\u00D7";
-    del.addEventListener("click", () => deleteHistoryRecord(r.startTime));
-    row.appendChild(del);
-
-    listEl.appendChild(row);
-  }
-}
+// renderHistoryPanel, renderHeatmap, getCategoryIcon removed — React HistoryPopup handles rendering
 
 // ============================================================
 // AUDIO
@@ -7040,7 +6555,7 @@ function updateFocusSounds() {
       if (!audio.paused) audio.pause();
     } else {
       const t = Math.max(0, Math.min(1, (SOUND_MAX_DIST - dist) / (SOUND_MAX_DIST - SOUND_MIN_DIST)));
-      const vol = t * t * SOUND_MAX_VOL * (volumeSlider.value / 100);
+      const vol = t * t * SOUND_MAX_VOL * (cachedVolume);
 
       if (cat === "reading") {
         // Play at random 20~40s intervals
@@ -7131,7 +6646,7 @@ function updateAmbientSound() {
     if (!audio.paused) audio.pause();
   } else {
     const t = Math.max(0, Math.min(1, (AMBIENT_MAX_DIST - closestDist) / (AMBIENT_MAX_DIST - AMBIENT_MIN_DIST)));
-    const vol = t * t * AMBIENT_MAX_VOL * (volumeSlider.value / 100);
+    const vol = t * t * AMBIENT_MAX_VOL * (cachedVolume);
     audio.volume = Math.min(1, Math.max(0, vol));
     if (audio.paused) {
       audio.play().catch(() => {});
@@ -7144,7 +6659,7 @@ const doorAudio = new Audio("/sounds/door.MP3");
 function playDoorSound() {
   if (!soundEnabled) return;
   doorAudio.currentTime = 0;
-  doorAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+  doorAudio.volume = SOUND_MAX_VOL * (cachedVolume);
   doorAudio.play().catch(() => {});
 }
 
@@ -7157,7 +6672,7 @@ function playDoorSlidingSound() {
   if (now - lastDoorSlideTime < 200) return;
   lastDoorSlideTime = now;
   doorSlidingAudio.currentTime = 0;
-  doorSlidingAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+  doorSlidingAudio.volume = SOUND_MAX_VOL * (cachedVolume);
   doorSlidingAudio.play().catch(() => {});
 }
 
@@ -7170,7 +6685,7 @@ function playDoorWoodenSound() {
   if (now - lastDoorWoodenTime < 200) return;
   lastDoorWoodenTime = now;
   doorWoodenAudio.currentTime = 0;
-  doorWoodenAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+  doorWoodenAudio.volume = SOUND_MAX_VOL * (cachedVolume);
   doorWoodenAudio.play().catch(() => {});
 }
 
@@ -7197,7 +6712,7 @@ function updateCatMeow() {
   if (isNear && !catWasNear && now > catMeowCooldown && (catState === "sit" || catState === "wander" || catState === "curious")) {
     if (Math.random() < 0.2) {
       catMeowAudio.currentTime = 0;
-      catMeowAudio.volume = SOUND_MAX_VOL * (volumeSlider.value / 100);
+      catMeowAudio.volume = SOUND_MAX_VOL * (cachedVolume);
       catMeowAudio.play().catch(() => {});
       catMeowCooldown = now + 10000;
       // Floating text
@@ -7251,7 +6766,7 @@ function updateCampfireSound() {
     if (!campfireAudio.paused) campfireAudio.pause();
   } else {
     const t = Math.max(0, Math.min(1, (CAMPFIRE_SOUND_MAX_DIST - closestDist) / (CAMPFIRE_SOUND_MAX_DIST - CAMPFIRE_SOUND_MIN_DIST)));
-    const vol = t * t * CAMPFIRE_SOUND_MAX_VOL * (volumeSlider.value / 100);
+    const vol = t * t * CAMPFIRE_SOUND_MAX_VOL * (cachedVolume);
     campfireAudio.volume = Math.min(1, Math.max(0, vol));
     if (campfireAudio.paused) {
       campfireAudio.play().catch(() => {});
@@ -7377,7 +6892,7 @@ function updateFrogSound() {
     if (!frogAudio.paused) frogAudio.pause();
   } else {
     const t = Math.max(0, Math.min(1, (FROG_SOUND_MAX_DIST - closestDist) / (FROG_SOUND_MAX_DIST - FROG_SOUND_MIN_DIST)));
-    const vol = t * t * FROG_SOUND_MAX_VOL * (volumeSlider.value / 100);
+    const vol = t * t * FROG_SOUND_MAX_VOL * (cachedVolume);
     frogAudio.volume = Math.min(1, Math.max(0, vol));
     if (frogAudio.paused) {
       frogAudio.play().catch(() => {});
@@ -7389,22 +6904,7 @@ function startMusic() {}
 function stopMusic() {}
 function switchMusic() {}
 
-musicToggle.addEventListener("click", () => {
-  soundEnabled = !soundEnabled;
-  musicToggle.textContent = soundEnabled ? t("soundOn") : t("soundOff");
-  if (!soundEnabled) {
-    for (const key in focusSounds) {
-      focusSounds[key].pause();
-      focusSounds[key].volume = 0;
-    }
-    stopAllAmbient();
-    campfireAudio.pause();
-    campfireAudio.volume = 0;
-    frogAudio.pause();
-    frogAudio.volume = 0;
-  }
-});
-volumeSlider.addEventListener("input", () => {});
+// musicToggle listener removed — React SettingsPanel handles sound toggle via __onSoundToggle
 
 // ============================================================
 // SOCKET EVENTS
@@ -7425,10 +6925,15 @@ socket.on("disconnect", () => {
 
 socket.on("currentPlayers", (players) => {
   myId = socket.id;
+  storeSet("game", "setLocalPlayerId", myId);
+  storeSet("game", "setPlayers", players);
   for (const id in players) {
     if (id === myId) {
       localPlayer = players[id];
-      if (isRegistered) {
+      // Check if this user appears to be registered (authEmail in localStorage
+      // is set by login flow and cleared by logout — reliable pre-sessionRestored signal)
+      const likelyRegistered = !!localStorage.getItem("authEmail");
+      if (likelyRegistered) {
         // Registered user: server has authoritative profile from DB
         // Update local state from server data
         selectedCharConfig = localPlayer.character;
@@ -7436,8 +6941,11 @@ socket.on("currentPlayers", (players) => {
         localStorage.setItem("playerName", localPlayer.name);
         localStorage.setItem("playerTagline", localPlayer.tagline || "");
         localStorage.setItem("playerLanguages", JSON.stringify(localPlayer.languages || []));
+        localStorage.setItem("playerBirthMonth", localPlayer.birthMonth != null ? String(localPlayer.birthMonth) : "");
+        localStorage.setItem("playerProfession", localPlayer.profession || "mystery");
+        savedProfession = localPlayer.profession || "mystery";
       } else {
-        // Guest: apply saved name on connect
+        // Guest: apply saved local profile to server
         const sn = localStorage.getItem("playerName");
         if (sn) {
           localPlayer.name = sn;
@@ -7446,7 +6954,23 @@ socket.on("currentPlayers", (players) => {
         // Apply saved character on connect
         localPlayer.character = selectedCharConfig;
         socket.emit("setCharacter", selectedCharConfig);
+        // Apply saved birth month
+        const savedBM = localStorage.getItem("playerBirthMonth");
+        if (savedBM) {
+          const bm = parseInt(savedBM, 10);
+          if (bm >= 1 && bm <= 12) {
+            localPlayer.birthMonth = bm;
+            socket.emit("setBirthMonth", bm);
+          }
+        }
+        // Apply saved profession
+        if (savedProfession) {
+          localPlayer.profession = savedProfession;
+          socket.emit("setProfession", savedProfession);
+        }
       }
+      // Ensure timezoneHour is set immediately
+      if (localPlayer.timezoneHour == null) localPlayer.timezoneHour = new Date().getHours();
       currentRoom = localPlayer.room;
       updateRoomUI();
     } else {
@@ -7490,6 +7014,7 @@ socket.on("sessionRestored", (data) => {
     // Suppress welcome popup and entrance walk
     hasCheckedIn = true;
     document.getElementById("welcome-popup").classList.add("hidden");
+    storeSet("ui", "setWelcomeOpen", false);
     autoWalking = false;
     autoWalkPath = [];
     lastKeyPressTime = Date.now();
@@ -7497,12 +7022,21 @@ socket.on("sessionRestored", (data) => {
     // Store session token from server
     if (data.sessionToken) localStorage.setItem("sessionToken", data.sessionToken);
   }
-  // Update auth state from server
-  if (data.isRegistered) {
-    isRegistered = true;
-    if (data.username) authUsername = data.username;
+  // Store guest authToken if newly created
+  if (data.authToken) {
+    authToken = data.authToken;
+    localStorage.setItem("authToken", data.authToken);
   }
-  updateAuthUI();
+  // Store userId for all users
+  if (data.userId) {
+    myUserId = data.userId;
+  }
+  // Update auth state from server
+  isRegistered = !!data.isRegistered;
+  if (data.email) authEmail = data.email;
+  if (data.focusRecords && data.focusRecords.length > 0) {
+    mergeFocusRecords(data.focusRecords);
+  }
 });
 
 // Visibility API: reset idle timers when tab becomes visible
@@ -7528,12 +7062,14 @@ window.addEventListener("beforeunload", (e) => {
 
 socket.on("playerJoined", (player) => {
   otherPlayers[player.id] = player;
+  storeSet("game", "updatePlayer", player.id, player);
   updateOnlineCount();
 });
 
 socket.on("playerLeft", (id) => {
   if (playerCardTarget === id) hidePlayerCard();
   delete otherPlayers[id];
+  storeSet("game", "removePlayer", id);
   updateOnlineCount();
 });
 
@@ -7558,6 +7094,7 @@ socket.on("playerUpdated", (player) => {
     localPlayer.tagline = player.tagline;
     localPlayer.languages = player.languages;
     localPlayer.timezoneHour = player.timezoneHour;
+    localPlayer.birthMonth = player.birthMonth;
     localSitting = player.isSitting;
     updateFocusUI();
   } else if (otherPlayers[player.id]) {
@@ -7571,6 +7108,7 @@ socket.on("playerUpdated", (player) => {
     otherPlayers[player.id].tagline = player.tagline;
     otherPlayers[player.id].languages = player.languages;
     otherPlayers[player.id].timezoneHour = player.timezoneHour;
+    otherPlayers[player.id].birthMonth = player.birthMonth;
   }
   updateOnlineCount();
 });
@@ -7595,9 +7133,7 @@ socket.on("playerChangedRoom", (data) => {
 
     autoWalking = false;
     autoWalkPath = [];
-    autowalkHint.style.display = "none";
     focusPortalPending = false;
-    focusPortalConfirm.style.display = "none";
     postFocusTime = 0; // Clear post-focus state on room change
     localSitting = false;
     localPlayer.isSitting = false;
@@ -7624,7 +7160,14 @@ socket.on("playerChangedRoom", (data) => {
 // Gift pile events
 socket.on("giftPileUpdated", (data) => {
   const target = data.id === myId ? localPlayer : otherPlayers[data.id];
-  if (target) target.giftPile = data.giftPile;
+  if (target) {
+    // Track new gifts received by local player
+    const oldLen = (target.giftPile && target.giftPile.length) || 0;
+    target.giftPile = data.giftPile;
+    if (data.id === myId && data.giftPile.length > oldLen) {
+      bumpLocalStat("catGiftsReceived", data.giftPile.length - oldLen);
+    }
+  }
 });
 
 socket.on("giftPileScatter", (data) => {
@@ -7635,15 +7178,25 @@ socket.on("giftPileScatter", (data) => {
 
 socket.on("chatMessage", (msg) => {
   addChatMessage(msg);
+  storeSet("chat", "addMessage", msg);
 });
 
 socket.on("chatHistory", (history) => {
   for (const msg of history) {
     addChatMessage(msg, true);
+    storeSet("chat", "addMessage", msg);
   }
 });
 
 socket.on("catUpdate", (data) => {
+  // Store server target for lerp interpolation
+  data._targetX = data.x;
+  data._targetY = data.y;
+  // Preserve current lerped position if same room
+  if (catData.room === data.room && catData._targetX !== undefined) {
+    data.x = catData.x;
+    data.y = catData.y;
+  }
   catData = data;
   renderMiniPiPStatus();
 });
@@ -7662,6 +7215,28 @@ socket.on("campfireUpdate", (data) => {
   campfireStates[data.room][data.id] = !!data.lit;
 });
 
+socket.on("bulletinNotes", (data) => {
+  if (!data) return;
+  if (data.announcements) storeSet("bulletin", "setAnnouncements", data.announcements);
+  if (data.notes) storeSet("bulletin", "setNotes", data.notes);
+  if (data.myLikedIds) storeSet("bulletin", "setMyLikes", data.myLikedIds);
+});
+
+socket.on("bulletinNoteAdded", (note) => {
+  if (!note || !bulletinPopupOpen) return;
+  socket.emit("getBulletinNotes");
+});
+
+socket.on("bulletinNoteDeleted", () => {
+  if (!bulletinPopupOpen) return;
+  socket.emit("getBulletinNotes");
+});
+
+socket.on("bulletinNoteLikeUpdated", () => {
+  if (!bulletinPopupOpen) return;
+  socket.emit("getBulletinNotes");
+});
+
 socket.on("emojiReaction", (data) => {
   console.log("[REACT] Received emojiReaction:", data.senderName, "->", data.targetName, data.emoji,
     "room:", data.room, "myRoom:", currentRoom, "myId:", myId,
@@ -7674,6 +7249,8 @@ socket.on("emojiReaction", (data) => {
   if (data.targetId === myId || data.senderId === myId) {
     showReactionNotification(data);
   }
+  // Track reactions received locally
+  if (data.targetId === myId) bumpLocalStat("reactionsReceived", 1);
 });
 
 function updateOnlineCount() {
@@ -7685,12 +7262,445 @@ function updateOnlineCount() {
   }
   const total = focusCount + loungeCount;
   miniOnlineCounts = { total, focus: focusCount, lounge: loungeCount };
-  if (onlineCount) onlineCount.textContent = String(total);
-  else onlineTotal.textContent = `🟢 ${total}`;
-  setOnlineDetailSegment(onlineFocus, "📖", t("focusZone"), focusCount);
-  setOnlineDetailSegment(onlineLounge, "☕", t("lounge"), loungeCount);
+  storeSet("game", "setOnlineCount", { total, focus: focusCount, lounge: loungeCount });
   renderMiniPiPStatus();
 }
+
+// ============================================================
+// REACT UI BRIDGE — window.__onXxx callbacks
+// React components call these; game.js executes the logic.
+// ============================================================
+
+// --- Chat ---
+window.__onChatSend = function(text, scope) {
+  if (!text || currentRoom !== "rest") return;
+  if (isChatRateLimited()) return;
+  chatSendTimes.push(Date.now());
+  if (chatSendTimes.length > 20) chatSendTimes.splice(0, chatSendTimes.length - 20);
+  socket.emit("chatMessage", { text, scope: scope || sendScope });
+};
+
+// --- Focus ---
+window.__onFocusStart = function(category, taskName) {
+  startFocus(category, taskName);
+};
+window.__onFocusEnd = function() {
+  endFocus();
+};
+
+// --- Portal confirm ---
+window.__onPortalConfirmYes = function() {
+  storeSet("ui", "setPortalConfirmOpen", false);
+  focusPortalPending = false;
+  endFocus();
+  const newRoom = currentRoom === "focus" ? "rest" : "focus";
+  socket.emit("changeRoom", newRoom);
+  portalCooldown = 60;
+};
+window.__onPortalConfirmNo = function() {
+  storeSet("ui", "setPortalConfirmOpen", false);
+  focusPortalPending = false;
+  portalCooldown = 60;
+  const map = getCurrentMap();
+  if (map && localPlayer) {
+    let sumY = 0, count = 0;
+    for (let r = 0; r < map.length; r++) {
+      for (let c = 0; c < (map[r] ? map[r].length : 0); c++) {
+        if (map[r][c] === PORTAL_TILE) { sumY += r * TILE + TILE / 2; count++; }
+      }
+    }
+    if (count > 0) {
+      const portalY = sumY / count;
+      const midY = map.length * TILE / 2;
+      localPlayer.y = portalY + (portalY < midY ? 2 : -2) * TILE;
+    }
+  }
+};
+
+// --- Settings ---
+window.__onSoundToggle = function(enabled) {
+  // Sound toggle now handled by React SettingsPanel
+};
+window.__onVolumeChange = function(vol) {
+  cachedVolume = vol / 100;
+};
+window.__onLogout = function() {
+  handleLogout();
+};
+window.__onMiniPip = function() {
+  openMiniPiPWindow();
+};
+window.__onLangChange = function(lang) {
+  currentLang = lang;
+  applyLanguage();
+};
+window.__onFontChange = function(usePixel) {
+  usePixelFont = usePixel;
+  localStorage.setItem("fontPixel", String(usePixel));
+  applyFont();
+};
+window.__onShowNamesChange = function(v) {
+  showNamesFilter = v;
+};
+
+// --- Status ---
+window.__onStatusChange = function(status) {
+  if (localPlayer) {
+    localPlayer.status = status;
+    socket.emit("setStatus", status);
+  }
+};
+
+// --- Player card / reactions ---
+window.__onReaction = function(targetId, emoji) {
+  socket.emit("sendReaction", { targetId, emoji });
+  hidePlayerCard();
+};
+window.__onFollowToggle = function(targetId) {
+  const p = otherPlayers[targetId];
+  const followKey = p?._userId || targetId;
+  toggleFollow(followKey);
+};
+
+// --- Bulletin board ---
+window.__onBulletinOpen = function() {
+  socket.emit("getBulletinNotes");
+};
+window.__onBulletinPost = function(text, color) {
+  socket.emit("addBulletinNote", { text, color });
+};
+window.__onBulletinLike = function(noteId) {
+  socket.emit("likeBulletinNote", { noteId });
+};
+window.__onBulletinDelete = function(noteId) {
+  socket.emit("deleteBulletinNote", { id: noteId });
+};
+
+// --- Auth ---
+window.__onAuthSuccess = function(token, email, profile, focusRecords) {
+  handleAuthSuccess(token, email, profile, focusRecords);
+};
+
+// --- Recording ---
+window.__onRecToggle = function() {
+  if (typeof recProcessing !== "undefined" && recProcessing) return;
+  if (typeof supportsRecording !== "undefined" && !supportsRecording) return;
+  if (typeof isRecording !== "undefined" && isRecording) {
+    stopRecording().catch(err => console.error("[REC] Stop failed:", err));
+  } else if (typeof startRecording === "function") {
+    startRecording();
+  }
+};
+
+// --- Local weekly stats tracking ---
+function getMonday(d) {
+  const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = dt.getDay();
+  const diff = day === 0 ? 6 : day - 1;
+  dt.setDate(dt.getDate() - diff);
+  return dt.toISOString().slice(0, 10);
+}
+
+function loadLocalStats() {
+  try { return JSON.parse(localStorage.getItem("weeklyLocalStats") || "null"); } catch { return null; }
+}
+
+function saveLocalStats(stats) {
+  localStorage.setItem("weeklyLocalStats", JSON.stringify(stats));
+}
+
+function getOrCreateCurrentStats() {
+  const thisWeek = getMonday(new Date());
+  let stats = loadLocalStats();
+  if (!stats || stats.weekStart !== thisWeek) {
+    // Archive current as lastWeek, start fresh
+    if (stats && stats.weekStart !== thisWeek) {
+      localStorage.setItem("weeklyLocalStatsLastWeek", JSON.stringify(stats));
+    }
+    stats = { weekStart: thisWeek, onlineSecs: 0, reactionsReceived: 0, catGiftsReceived: 0 };
+    saveLocalStats(stats);
+  }
+  return stats;
+}
+
+function bumpLocalStat(key, amount) {
+  const stats = getOrCreateCurrentStats();
+  stats[key] = (stats[key] || 0) + amount;
+  saveLocalStats(stats);
+}
+
+// Track online time every 60s
+setInterval(() => { if (localPlayer) bumpLocalStat("onlineSecs", 60); }, 60000);
+
+// --- Recap ---
+function buildRecapDateRange(weekStartStr) {
+  const ws = new Date(weekStartStr + "T00:00:00");
+  const we = new Date(ws);
+  we.setDate(we.getDate() + 6);
+  const locale = currentLang === "zh" ? "zh-CN" : "en-US";
+  const opts = { year: "numeric", month: "short", day: "numeric" };
+  return `${ws.toLocaleDateString(locale, opts)} – ${we.toLocaleDateString(locale, opts)}`;
+}
+
+function buildRecapItems(oh, rr, cg) {
+  return [
+    { label: t("recapOnline"), value: `${oh} ${t("recapHours")}` },
+    { label: t("recapReactions"), value: String(rr) },
+    { label: t("recapCatGifts"), value: String(cg) },
+  ];
+}
+
+window.__onRecapOpen = async function() {
+  storeSet("ui", "setRecapOpen", true);
+
+  if (!authToken) {
+    // Guest: show last week's local stats
+    getOrCreateCurrentStats(); // ensure archiving happened
+    let last = null;
+    try { last = JSON.parse(localStorage.getItem("weeklyLocalStatsLastWeek") || "null"); } catch {}
+    if (last) {
+      const oh = Math.round((last.onlineSecs || 0) / 3600 * 10) / 10;
+      const dateRange = buildRecapDateRange(last.weekStart);
+      const items = buildRecapItems(oh, last.reactionsReceived || 0, last.catGiftsReceived || 0);
+      if (window.__setRecapData) window.__setRecapData({ dateRange, items });
+    }
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/weekly-recap", {
+      headers: { "Authorization": "Bearer " + authToken },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    let dateRange = "";
+    if (data.weekStart) dateRange = buildRecapDateRange(data.weekStart);
+    const oh = data.onlineHours || 0;
+    const rr = data.reactionsReceived || 0;
+    const cg = data.catGiftsReceived || 0;
+    const items = buildRecapItems(oh, rr, cg);
+    if (window.__setRecapData) window.__setRecapData({ dateRange, items });
+  } catch (e) {
+    console.warn("[Recap] Failed to fetch:", e);
+  }
+};
+
+// --- Save blob file (download or Web Share) ---
+function saveBlobFile(blob, filename, mime) {
+  const shareFile = isTouchDevice && new File([blob], filename, { type: mime });
+  if (shareFile && navigator.canShare?.({ files: [shareFile] })) {
+    navigator.share({ files: [shareFile] }).catch(() => {});
+  } else {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+}
+
+// --- Focus Recap Shareable Card ---
+window.__generateFocusCard = function(data, returnCanvas = false) {
+  // data: { dateRange, totalMs, sessions, categories, lang }, returnCanvas: if true, return canvas instead of downloading
+  const W = 800, H = 400;
+  const cvs = document.createElement("canvas");
+  cvs.width = W; cvs.height = H;
+  const ctx = cvs.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+
+  // Colors from design tokens
+  const BG = "#2e3a4a";
+  const SURFACE = "#354050";
+  const TEXT = "#e4e0d8";
+  const MUTED = "#b0b8c4";
+  const PRIMARY = "#88c0d6";
+  const DIVIDER = "#404e60";
+  const CAT_COLORS = {
+    studying: "#88c0d6",
+    working:  "#b0a0c8",
+    reading:  "#88c498",
+    writing:  "#e4c078",
+    creating: "#e48888",
+    exercising: "#c0a080",
+  };
+
+  const fontFamily = "'FusionPixel', sans-serif";
+  const font = (size, bold) => (bold ? "bold " : "") + size + "px " + fontFamily;
+
+  // Background
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, W, H);
+  // Subtle gradient at top
+  const grad = ctx.createLinearGradient(0, 0, 0, 100);
+  grad.addColorStop(0, "rgba(136,192,214,0.06)");
+  grad.addColorStop(1, "rgba(136,192,214,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, 100);
+
+  // Header
+  ctx.font = font(16, true);
+  ctx.fillStyle = TEXT;
+  ctx.textBaseline = "top";
+  ctx.fillText("BESIDE \u00B7 " + t("focusRecap"), 32, 24);
+  ctx.font = font(12, false);
+  ctx.fillStyle = MUTED;
+  ctx.fillText(data.dateRange, 32, 48);
+
+  // Top divider
+  ctx.fillStyle = DIVIDER;
+  ctx.fillRect(32, 72, W - 64, 1);
+
+  // Character sprite — 4x scale (128x256), draw in left area
+  const sheet = getCharacterSheet(selectedCharConfig);
+  if (sheet && sheet._loaded) {
+    // Static down frame: row 0, col 3 (same as drawCharPreview)
+    ctx.drawImage(sheet, 3 * 32, 0, 32, 64, 40, 90, 128, 256);
+  }
+
+  // Stats — right of character
+  const statsX = 200;
+
+  // Total time
+  const totalMins = Math.floor(data.totalMs / 60000);
+  const totalH = Math.floor(totalMins / 60);
+  const totalM = totalMins % 60;
+  let totalStr;
+  if (data.lang === "zh") {
+    totalStr = totalH > 0
+      ? (totalM > 0 ? `${totalH}\u5C0F\u65F6 ${totalM}\u5206\u949F` : `${totalH}\u5C0F\u65F6`)
+      : `${totalM}\u5206\u949F`;
+  } else {
+    totalStr = totalH > 0
+      ? (totalM > 0 ? `${totalH}h ${totalM}m` : `${totalH}h`)
+      : `${totalM}m`;
+  }
+  ctx.font = font(36, true);
+  ctx.fillStyle = PRIMARY;
+  ctx.fillText(totalStr, statsX, 92);
+
+  ctx.font = font(14, false);
+  ctx.fillStyle = MUTED;
+  const totalLabel = data.lang === "zh" ? "TOTAL FOCUS" : "TOTAL FOCUS";
+  ctx.fillText(totalLabel, statsX + ctx.measureText(totalStr).width + 12, 104);
+
+  ctx.font = font(14, false);
+  ctx.fillStyle = MUTED;
+  const sessStr = data.lang === "zh"
+    ? `${data.sessions} \u6B21`
+    : `${data.sessions} sessions`;
+  ctx.fillText(sessStr, statsX, 136);
+
+  // Category bars
+  const barX = statsX;
+  const barMaxW = W - barX - 48;
+  let barY = 176;
+  const barH = 16;
+  const barGap = 32;
+  const cats = data.categories.slice(0, 5); // max 5 categories
+
+  cats.forEach(({ cat, ms, pct }) => {
+    // Bar
+    const bw = Math.max(4, (pct / 100) * barMaxW * 0.7);
+    ctx.fillStyle = CAT_COLORS[cat] || PRIMARY;
+    ctx.fillRect(barX, barY, bw, barH);
+
+    // Label
+    ctx.font = font(12, false);
+    ctx.fillStyle = TEXT;
+    const catLabel = t(cat) || cat;
+    ctx.fillText(catLabel, barX + bw + 8, barY + 2);
+
+    // Time
+    const catMins = Math.floor(ms / 60000);
+    const cH = Math.floor(catMins / 60);
+    const cM = catMins % 60;
+    let catTime;
+    if (data.lang === "zh") {
+      catTime = cH > 0
+        ? (cM > 0 ? `${cH}\u5C0F\u65F6 ${cM}\u5206\u949F` : `${cH}\u5C0F\u65F6`)
+        : `${cM}\u5206\u949F`;
+    } else {
+      catTime = cH > 0
+        ? (cM > 0 ? `${cH}h ${cM}m` : `${cH}h`)
+        : `${cM}m`;
+    }
+    const catTimeX = W - 100;
+    ctx.fillStyle = MUTED;
+    ctx.fillText(catTime, catTimeX, barY + 2);
+
+    // Percentage
+    ctx.fillText(`${pct}%`, W - 44, barY + 2);
+
+    barY += barGap;
+  });
+
+  // Bottom divider
+  ctx.fillStyle = DIVIDER;
+  ctx.fillRect(32, H - 48, W - 64, 1);
+
+  // Footer
+  ctx.font = font(12, false);
+  ctx.fillStyle = MUTED;
+  ctx.textAlign = "center";
+  ctx.fillText("beside.app", W / 2, H - 32);
+  ctx.textAlign = "left";
+
+  // Return canvas if requested (for preview)
+  if (returnCanvas) {
+    return cvs;
+  }
+
+  // Export as PNG
+  cvs.toBlob(function(blob) {
+    if (!blob) return;
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const filename = `beside-focus-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}.png`;
+    saveBlobFile(blob, filename, "image/png");
+  }, "image/png");
+};
+
+// --- React ready callback ---
+window.__onReactReady = function() {
+  updateSettingsCharBtn();
+  // Sync initial state to React stores
+  if (typeof currentRoom !== "undefined" && currentRoom) {
+    storeSet("game", "setRoom", currentRoom);
+    storeSet("chat", "setChatVisible", currentRoom === "rest");
+  }
+  if (typeof isFocusing !== "undefined" && isFocusing) {
+    storeSet("focus", "startFocus", focusCategory || "working", focusTaskName || "");
+  }
+  // Sync welcome popup state (returning users already checked in before React mounted)
+  if (typeof hasCheckedIn !== "undefined" && hasCheckedIn) {
+    storeSet("ui", "setWelcomeOpen", false);
+  }
+  // Sync auth state
+  if (typeof isRegistered !== "undefined" && isRegistered && authEmail) {
+    storeSet("auth", "login", authToken, authEmail);
+  } else if (typeof myUserId !== "undefined" && myUserId) {
+    storeSet("auth", "setSessionReady", isRegistered, myUserId);
+  }
+  // Sync settings
+  if (typeof soundEnabled !== "undefined") storeSet("settings", "setSoundEnabled", soundEnabled);
+  if (typeof cachedVolume !== "undefined") storeSet("settings", "setVolume", Math.round(cachedVolume * 100));
+  if (typeof currentLang !== "undefined") storeSet("settings", "setLang", currentLang);
+  if (typeof usePixelFont !== "undefined") storeSet("settings", "setFontPixel", usePixelFont);
+  // Sync player data (may have arrived before stores were ready)
+  if (myId) {
+    storeSet("game", "setLocalPlayerId", myId);
+    const allPlayers = {};
+    if (localPlayer) allPlayers[myId] = localPlayer;
+    for (const id in otherPlayers) {
+      const p = otherPlayers[id];
+      allPlayers[id] = { ...p, _followed: !!(p._userId && isFollowed(p._userId)) };
+    }
+    if (Object.keys(allPlayers).length > 0) storeSet("game", "setPlayers", allPlayers);
+  }
+};
 
 // ============================================================
 // GAME LOOP
@@ -7739,10 +7749,7 @@ function update(dt) {
   if (dx < 0) localPlayer.direction = "left";
   else if (dx > 0) localPlayer.direction = "right";
 
-  // Update focus timer display
-  if (isFocusing && focusStartTime) {
-    focusTimeValue.textContent = formatFocusTime(Date.now() - focusStartTime);
-  }
+  // Focus timer display: React FocusTimer reads focusStartTime and computes elapsed on its own
 
   // Proximity focus sounds
   updateFocusSounds();
@@ -7759,12 +7766,6 @@ function update(dt) {
     } else if (idleTime > DAYDREAM_MS && localPlayer.status !== "daydreaming") {
       localPlayer.status = "daydreaming";
       socket.emit("setStatus", "daydreaming");
-    }
-  }
-  // Post-focus auto-walk (30s idle after ending focus)
-  if (!isFocusing && postFocusTime > 0 && currentRoom === "focus" && !autoWalking) {
-    if (Date.now() - lastKeyPressTime > IDLE_MS) {
-      startAutoWalk();
     }
   }
 
@@ -7842,6 +7843,8 @@ function update(dt) {
 
 // Y-sorted rendering: interleave object-layer tile rows with entities (players, cat)
 // so that entities appear behind tall furniture when walking above it
+const _ysortEntities = []; // reuse array to avoid per-frame allocation
+const _eKeyCache = { tx: -1, ty: -1, room: null, bbNear: null, campNear: null, seat: null };
 function drawYSortedEntities() {
   const rd = ROOM_DATA[currentRoom];
   const dims = ROOM_DIMS[currentRoom] || ROOM_DIMS.focus;
@@ -7849,7 +7852,8 @@ function drawYSortedEntities() {
   const objCache = getObjectCache(currentRoom);
 
   // Collect all entities with their sort Y (feet/base position)
-  const entities = [];
+  const entities = _ysortEntities;
+  entities.length = 0;
   if (catData.room === currentRoom) {
     entities.push({ type: 0, sortY: catData.y });
   }
@@ -7862,10 +7866,20 @@ function drawYSortedEntities() {
   if (localPlayer) {
     entities.push({ type: 1, p: localPlayer, local: true, sortY: localPlayer.y });
   }
+  // Include pet/animal map objects in Y-sorted pass so they render above furniture
+  const mapObjs = rd.mapObjectsBelow;
+  if (mapObjs) {
+    for (const obj of mapObjs) {
+      if (obj.type === "pet" || obj.type === "animal") {
+        entities.push({ type: 2, obj, sortY: obj.y + (obj.height || 16) });
+      }
+    }
+  }
   entities.sort((a, b) => a.sortY - b.sortY);
 
   const drawEntity = (e) => {
     if (e.type === 0) { drawCatBody(); drawCatUI(); }
+    else if (e.type === 2) { drawSingleMapObject(e.obj); }
     else { drawFocusAura(e.p); drawPlayerBody(e.p, e.local); drawGiftPile(e.p); }
   };
 
@@ -7887,7 +7901,8 @@ function drawYSortedEntities() {
 
 function draw() {
   ctx = mainCtx;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#0f0d0b";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Show nothing until assets are loaded (overlay covers the canvas)
   if (!gameReady) return;
@@ -7895,8 +7910,9 @@ function draw() {
   // Apply camera transform
   updateCamera();
   ctx.save();
-  const gs = gameScale * dpr;
-  ctx.setTransform(gs, 0, 0, gs, -cameraX * gs, -cameraY * gs);
+  // Quantize render scale so TILE * gs is integer → pixel-perfect tile grid
+  const gs = Math.round(gameScale * dpr * TILE) / TILE;
+  ctx.setTransform(gs, 0, 0, gs, Math.round(-cameraX * gs), Math.round(-cameraY * gs));
   ctx.imageSmoothingEnabled = false;
 
   cachedTimeKey = getAmbientKey();
@@ -7911,6 +7927,12 @@ function draw() {
   // updateAndDrawDustMotes(); // disabled: dust motes
   drawMapObjects(ROOM_DATA[currentRoom].mapObjectsBelow);
 
+  // Lerp cat position for smooth movement
+  if (catData._targetX !== undefined) {
+    catData.x += (catData._targetX - catData.x) * 0.25;
+    catData.y += (catData._targetY - catData.y) * 0.25;
+  }
+
   // Y-sorted pass: blocking tile rows interleaved with cat + players
   drawYSortedEntities();
 
@@ -7924,11 +7946,16 @@ function draw() {
   // Campfire animation should appear above static tiles and outdoor shade
   drawCampfireObjects();
 
-  // Draw player labels + UI ABOVE all tile layers
+  // Draw player labels + UI ABOVE all tile layers (with viewport culling)
+  const _viewW = canvas.width / dpr / gameScale;
+  const _viewH = canvas.height / dpr / gameScale;
+  const _vpL = cameraX - 80, _vpR = cameraX + _viewW + 80;
+  const _vpT = cameraY - 80, _vpB = cameraY + _viewH + 80;
   for (const id in otherPlayers) {
-    if (otherPlayers[id].room === currentRoom) {
-      drawPlayerLabel(otherPlayers[id]);
-      drawChatBubble(otherPlayers[id]);
+    const op = otherPlayers[id];
+    if (op.room === currentRoom && op.x > _vpL && op.x < _vpR && op.y > _vpT && op.y < _vpB) {
+      drawPlayerLabel(op);
+      drawChatBubble(op);
     }
   }
   if (localPlayer) {
@@ -7952,7 +7979,7 @@ function draw() {
       const hp = otherPlayers[hoveredPlayerId];
       ctx.save();
       ctx.globalAlpha = hintAlpha;
-      ctx.font = "bold 14px sans-serif";
+      ctx.font = f(14, true);
       ctx.textAlign = "center";
       ctx.fillStyle = "#fff";
       ctx.strokeStyle = "rgba(0,0,0,0.6)";
@@ -7964,55 +7991,51 @@ function draw() {
     }
   }
 
-  // Draw E-key interact prompt near campfire / sittable seat (hide after 5s idle)
+  // Draw E-key interact prompt near bulletin board / campfire / sittable seat (hide after 5s idle)
   if (localPlayer && !localSitting && !isTouchDevice) {
     const idleMs = Date.now() - lastMoveTime;
     const eKeyVisible = idleMs < 5000;
     const eKeyFade = idleMs >= 4000 && idleMs < 5000 ? 1 - (idleMs - 4000) / 1000 : eKeyVisible ? 1 : 0;
     if (eKeyFade > 0) {
-      const _camp = getNearestCampfire();
-      const _campNear = _camp && _camp.dist <= CAMPFIRE_INTERACT_DIST;
-      const _seat = _campNear ? null : getNearestSittable(localPlayer.x, localPlayer.y);
-      if (_campNear) {
+      // Cache proximity results — only recalculate when player tile changes
+      const _ptx = Math.floor(localPlayer.x / TILE);
+      const _pty = Math.floor(localPlayer.y / TILE);
+      if (_eKeyCache.tx !== _ptx || _eKeyCache.ty !== _pty || _eKeyCache.room !== currentRoom) {
+        _eKeyCache.tx = _ptx; _eKeyCache.ty = _pty; _eKeyCache.room = currentRoom;
+        const _bb = getNearestBulletinBoard();
+        _eKeyCache.bbNear = _bb && _bb.dist <= BULLETIN_INTERACT_DIST ? _bb : null;
+        const _camp = _eKeyCache.bbNear ? null : getNearestCampfire();
+        _eKeyCache.campNear = _camp && _camp.dist <= CAMPFIRE_INTERACT_DIST ? _camp : null;
+        _eKeyCache.seat = (_eKeyCache.bbNear || _eKeyCache.campNear) ? null : getNearestSittable(localPlayer.x, localPlayer.y);
+      }
+      let ekx, eky;
+      if (_eKeyCache.bbNear) {
+        ekx = _eKeyCache.bbNear.x; eky = _eKeyCache.bbNear.y - 28;
+      } else if (_eKeyCache.campNear) {
+        ekx = _eKeyCache.campNear.x; eky = _eKeyCache.campNear.y - 28;
+      } else if (_eKeyCache.seat) {
+        const _seatEntry = SEATS[currentRoom] && SEATS[currentRoom][_eKeyCache.seat.row + "," + _eKeyCache.seat.col];
+        ekx = _eKeyCache.seat.x + (_seatEntry && _seatEntry.manual ? (_seatEntry.dx || 0) : 0);
+        eky = _eKeyCache.seat.y - 28;
+      }
+      if (ekx !== undefined) {
         ctx.save();
         ctx.globalAlpha = eKeyFade;
-        const kx = _camp.x, ky = _camp.y - 28;
-        const ks = 20; // square size
+        const ks = 20;
         ctx.fillStyle = "rgba(0,0,0,0.45)";
         ctx.beginPath();
-        ctx.roundRect(kx - ks / 2, ky - ks / 2, ks, ks, 4);
+        ctx.roundRect(ekx - ks / 2, eky - ks / 2, ks, ks, 4);
         ctx.fill();
         ctx.strokeStyle = "#fff";
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.roundRect(kx - ks / 2, ky - ks / 2, ks, ks, 4);
+        ctx.roundRect(ekx - ks / 2, eky - ks / 2, ks, ks, 4);
         ctx.stroke();
         ctx.fillStyle = "#fff";
-        ctx.font = "bold 14px 'MiSans', sans-serif";
+        ctx.font = f(14, true);
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText("E", kx, ky);
-        ctx.restore();
-      } else if (_seat) {
-        ctx.save();
-        ctx.globalAlpha = eKeyFade;
-        const _seatEntry = SEATS[currentRoom] && SEATS[currentRoom][_seat.row + "," + _seat.col];
-        const kx = _seat.x + (_seatEntry && _seatEntry.manual ? (_seatEntry.dx || 0) : 0), ky = _seat.y - 28;
-        const ks = 20; // square size
-        ctx.fillStyle = "rgba(0,0,0,0.45)";
-        ctx.beginPath();
-        ctx.roundRect(kx - ks / 2, ky - ks / 2, ks, ks, 4);
-        ctx.fill();
-        ctx.strokeStyle = "#fff";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.roundRect(kx - ks / 2, ky - ks / 2, ks, ks, 4);
-        ctx.stroke();
-        ctx.fillStyle = "#fff";
-        ctx.font = "bold 14px 'MiSans', sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText("E", kx, ky);
+        ctx.fillText("E", ekx, eky);
         ctx.restore();
       }
     }
@@ -8036,19 +8059,24 @@ function drawOutdoorShade() {
   if (!mask) return;
   // Composite on an offscreen canvas so we don't clip the whole scene
   let shade = outdoorShadeCache[currentRoom];
-  if (!shade || shade.width !== mask.width || shade.height !== mask.height) {
-    shade = document.createElement("canvas");
-    shade.width = mask.width;
-    shade.height = mask.height;
-    outdoorShadeCache[currentRoom] = shade;
+  const needsRebuild = !shade || shade.width !== mask.width || shade.height !== mask.height
+    || _shadeTimeKey[currentRoom] !== cachedTimeKey;
+  if (needsRebuild) {
+    if (!shade || shade.width !== mask.width || shade.height !== mask.height) {
+      shade = document.createElement("canvas");
+      shade.width = mask.width;
+      shade.height = mask.height;
+      outdoorShadeCache[currentRoom] = shade;
+    }
+    const sctx = shade.getContext("2d");
+    sctx.clearRect(0, 0, shade.width, shade.height);
+    sctx.fillStyle = tv.outdoorShadeColor || "rgba(0,0,0,1)";
+    sctx.fillRect(0, 0, shade.width, shade.height);
+    sctx.globalCompositeOperation = "destination-in";
+    sctx.drawImage(mask, 0, 0);
+    sctx.globalCompositeOperation = "source-over";
+    _shadeTimeKey[currentRoom] = cachedTimeKey;
   }
-  const sctx = shade.getContext("2d");
-  sctx.clearRect(0, 0, shade.width, shade.height);
-  sctx.fillStyle = tv.outdoorShadeColor || "rgba(0,0,0,1)";
-  sctx.fillRect(0, 0, shade.width, shade.height);
-  sctx.globalCompositeOperation = "destination-in";
-  sctx.drawImage(mask, 0, 0);
-  sctx.globalCompositeOperation = "source-over";
 
   ctx.save();
   ctx.globalAlpha = tv.outdoorShadeAlpha;
@@ -8088,6 +8116,10 @@ function gameLoop() {
 
 // Language toggle
 document.getElementById("lang-toggle").addEventListener("click", toggleLanguage);
+
+// Font toggle
+document.getElementById("font-toggle").addEventListener("click", toggleFont);
+applyFont();
 
 // ============================================================
 // VIRTUAL JOYSTICK (touch devices only)
@@ -8235,6 +8267,11 @@ const sitBtn = document.getElementById("sit-btn");
 if (sitBtn) {
   sitBtn.addEventListener("click", () => {
     if (!localPlayer || isFocusing) return;
+    const bb = getNearestBulletinBoard();
+    if (bb && bb.dist <= BULLETIN_INTERACT_DIST) {
+      openBulletinPopup();
+      return;
+    }
     const camp = getNearestCampfire();
     if (camp && camp.dist <= CAMPFIRE_INTERACT_DIST) {
       socket.emit("toggleCampfire", { id: camp.id, x: localPlayer.x, y: localPlayer.y });
@@ -8263,6 +8300,9 @@ function updateSitButton() {
   if (!sitBtn || !localPlayer || !isTouchDevice) return;
   if (localSitting) {
     sitBtn.style.display = "none";
+  } else if (getNearestBulletinBoard()?.dist <= BULLETIN_INTERACT_DIST) {
+    sitBtn.style.display = "block";
+    sitBtn.textContent = "INTERACT";
   } else if (getNearestCampfire()?.dist <= CAMPFIRE_INTERACT_DIST) {
     sitBtn.style.display = "block";
     sitBtn.textContent = "INTERACT";
@@ -8286,6 +8326,7 @@ setInterval(() => {
 // This produces smooth, high-quality timelapse video.
 // ============================================================
 const recBtn = document.getElementById("rec-btn");
+const recIcon = document.getElementById("rec-icon");
 const recTimer = document.getElementById("rec-timer");
 let isRecording = false;
 let recProcessing = false;
@@ -8354,14 +8395,18 @@ function startRecording() {
   recHeight = Math.round(canvas.height / dpr);
   recStartTime = performance.now();
   isRecording = true;
+  storeSet("ui", "setIsRecording", true);
   recCaptureFrame();
   recCaptureTimer = setInterval(recCaptureFrame, REC_CAPTURE_MS);
   if (recBtn) recBtn.classList.add("recording");
+  if (recIcon) { recIcon.style.maskImage = "url(/icons/square.svg)"; recIcon.style.webkitMaskImage = "url(/icons/square.svg)"; }
   if (recTimer) { recTimer.textContent = "00:00"; recTimer.classList.add("visible"); }
 }
 
 async function stopRecording() {
   isRecording = false;
+  storeSet("ui", "setIsRecording", false);
+  storeSet("ui", "setRecProcessing", true);
   if (recCaptureTimer) { clearInterval(recCaptureTimer); recCaptureTimer = null; }
 
   // Capture final frame as JPEG blob
@@ -8378,7 +8423,9 @@ async function stopRecording() {
 
   if (frames.length === 0) {
     if (recBtn) { recBtn.classList.remove("recording"); recBtn.title = t("recStart"); }
+    if (recIcon) { recIcon.style.maskImage = "url(/icons/video.svg)"; recIcon.style.webkitMaskImage = "url(/icons/video.svg)"; }
     if (recTimer) recTimer.classList.remove("visible");
+    storeSet("ui", "setRecProcessing", false);
     recWidth = 0; recHeight = 0;
     return;
   }
@@ -8427,22 +8474,7 @@ async function stopRecording() {
         const now = new Date();
         const pad = (n) => String(n).padStart(2, "0");
         const filename = `beside-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.${mimeInfo.ext}`;
-
-        // iOS Safari: <a download> is ignored, use Web Share API instead
-        // Only on touch devices — desktop Chrome also supports canShare but <a download> works fine
-        const shareFile = isTouchDevice && new File([blob], filename, { type: mimeInfo.mime });
-        if (shareFile && navigator.canShare?.({ files: [shareFile] })) {
-          navigator.share({ files: [shareFile] }).catch(() => {});
-        } else {
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          setTimeout(() => URL.revokeObjectURL(url), 60000);
-        }
+        saveBlobFile(blob, filename, mimeInfo.mime);
         resolve();
       };
 
@@ -8485,8 +8517,10 @@ async function stopRecording() {
     console.error("[REC] Encoding failed:", err);
   } finally {
     recProcessing = false;
+    storeSet("ui", "setRecProcessing", false);
     recWidth = 0; recHeight = 0;
     if (recBtn) { recBtn.classList.remove("recording"); recBtn.title = t("recStart"); }
+    if (recIcon) { recIcon.style.maskImage = "url(/icons/video.svg)"; recIcon.style.webkitMaskImage = "url(/icons/video.svg)"; }
     if (recTimer) recTimer.classList.remove("visible");
     recSnapCanvas = null;
     recSnapCtx = null;
@@ -8494,14 +8528,23 @@ async function stopRecording() {
 }
 
 function updateRecTitle() {
-  if (!recBtn || !isRecording) return;
+  if (!isRecording) return;
   const elapsed = Math.floor((performance.now() - recStartTime) / 1000);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
   const timeStr = `${mm}:${ss}`;
-  recBtn.title = `${t("recStop")} (${timeStr})`;
+  if (recBtn) recBtn.title = `${t("recStop")} (${timeStr})`;
   if (recTimer) recTimer.textContent = timeStr;
+  storeSet("ui", "setRecTimeStr", timeStr);
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && (isRecording || recProcessing)) {
+    document.title = "\u{1F4F9} Recording - Beside";
+  } else {
+    document.title = "Beside";
+  }
+});
 
 if (recBtn) {
   recBtn.addEventListener("click", (e) => {
@@ -8515,6 +8558,17 @@ if (recBtn) {
     }
   });
 }
+
+// --- Screenshot ---
+window.__onScreenshot = function() {
+  canvas.toBlob(function(blob) {
+    if (!blob) return;
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const filename = `beside-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`;
+    saveBlobFile(blob, filename, "image/png");
+  }, "image/png");
+};
 
 // Start
 applyLanguage();

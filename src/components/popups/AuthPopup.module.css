@@ -1,0 +1,19 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-px-2);
+}
+
+.error {
+  color: var(--retro-red);
+  font-size: var(--fs-sm);
+  text-align: center;
+  min-height: var(--size-px-3);
+}
+
+.actions {
+  display: flex;
+  gap: var(--size-px-2);
+  justify-content: center;
+  margin-top: var(--size-px-1);
+}

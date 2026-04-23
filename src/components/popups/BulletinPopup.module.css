@@ -1,0 +1,132 @@
+.scroll {
+  overflow-y: auto;
+  max-height: 50vh;
+  min-height: 0;
+  margin-bottom: var(--size-px-2);
+}
+
+.sectionLabel {
+  color: var(--retro-muted); font-size: var(--fs-sm); font-weight: bold;
+  text-transform: uppercase; margin: 0 0 var(--size-px-2); letter-spacing: 0.5px;
+}
+
+.divider { border-top: var(--border-md) solid var(--retro-divider); margin: var(--size-px-2) 0; }
+
+/* Announcements */
+.annItem {
+  border: var(--border-md) solid var(--retro-divider);
+  background: var(--retro-surface);
+  padding: var(--size-px-2) var(--size-px-2-5);
+  margin-bottom: var(--size-px-2);
+}
+.annText { color: var(--retro-text); font-size: var(--fs-sm); word-break: break-word; margin: 0; }
+.annMeta { color: var(--retro-muted); font-size: var(--fs-sm); margin-top: var(--size-px-1); }
+
+/* Notes grid */
+.notesGrid { column-count: 3; column-gap: 8px; }
+
+.noteCard {
+  padding: 10px;
+  word-break: break-word;
+  font-size: var(--fs-sm);
+  break-inside: avoid;
+  margin-bottom: 8px;
+}
+.noteHeader {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--size-px-2);
+}
+.noteText { color: var(--note-text); margin: 0 0 var(--size-px-2); }
+.noteMeta {
+  display: flex; align-items: center; gap: var(--size-px-1);
+}
+.noteAuthor { color: var(--note-meta); display: flex; align-items: center; gap: 4px; }
+.noteProfession {
+  font-size: var(--fs-sm);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--size-px-2);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  color: var(--note-ink-muted);
+  background: rgba(255,255,255,0.08);
+}
+.noteTime { color: var(--note-ink-muted); }
+.noteLike {
+  background: none; border: none;
+  color: var(--note-ink-muted);
+  cursor: pointer;
+  padding: 0; margin-left: auto;
+  display: inline-flex; align-items: center; gap: var(--size-px-1);
+}
+.noteLike:hover { opacity: 0.8; }
+.noteLiked { color: var(--note-text); }
+.noteLikeCount {
+  color: var(--note-ink-muted);
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: var(--size-px-1);
+}
+.heartIcon {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+  vertical-align: middle;
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+.noteDelete {
+  background: none; border: none;
+  color: var(--note-ink-muted);
+  cursor: pointer;
+  padding: 0; line-height: 1; flex-shrink: 0;
+}
+.noteDelete:hover { color: var(--note-delete-hover); }
+
+/* Colors */
+.colorYellow { background: var(--note-yellow); border: 1px solid var(--note-yellow-border); }
+.colorPink   { background: var(--note-pink);   border: 1px solid var(--note-pink-border); }
+.colorBlue   { background: var(--note-blue);   border: 1px solid var(--note-blue-border); }
+.colorGreen  { background: var(--note-green);  border: 1px solid var(--note-green-border); }
+.colorPurple { background: var(--note-purple); border: 1px solid var(--note-purple-border); }
+
+.empty {
+  color: var(--retro-muted); font-size: var(--fs-sm); font-style: normal;
+  text-align: center; padding: var(--size-px-4) 0;
+}
+
+/* Input meta row (color picker + char count) */
+.inputMeta {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: var(--size-px-1);
+}
+.colorPicker { display: flex; gap: 4px; align-items: center; }
+.colorDot {
+  width: 18px; height: 18px; border-radius: 50%; border: var(--border-md) solid transparent;
+  cursor: pointer; padding: 0; background: none; transition: transform 0.1s;
+}
+.colorDot:hover { transform: scale(1.15); }
+.colorDotActive { border-color: var(--retro-text); transform: scale(1.15); }
+.dotYellow { background: var(--note-yellow-border); }
+.dotPink   { background: var(--note-pink-border); }
+.dotBlue   { background: var(--note-blue-border); }
+.dotGreen  { background: var(--note-green-border); }
+.dotPurple { background: var(--note-purple-border); }
+
+/* Own note — highlight author name */
+.noteOwn .noteAuthor { color: var(--name-self); }
+
+.inputArea { margin-bottom: var(--size-px-2); position: relative; }
+.inputArea textarea { resize: none; }
+.charCount {
+  font-size: var(--fs-sm); color: var(--retro-muted);
+}
+
+.loginHint {
+  color: var(--retro-muted); font-size: var(--fs-sm); text-align: center; margin-bottom: var(--size-px-2);
+}
+
+.bottomActions {
+  display: flex; gap: var(--size-px-2); justify-content: center;
+}

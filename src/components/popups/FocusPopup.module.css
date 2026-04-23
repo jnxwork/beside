@@ -1,0 +1,24 @@
+.categories {
+  margin-bottom: var(--size-px-3);
+}
+/* PixelSegmented: allow wrapping for 6 options */
+.categories > div > div {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: var(--size-px-2);
+}
+.categories > div > div > button {
+  flex: 1 1 calc(33.33% - var(--size-px-2));
+}
+
+.taskRow {
+  margin-bottom: var(--size-px-3);
+}
+
+.actions {
+  display: flex;
+  gap: var(--size-px-2);
+  justify-content: center;
+  padding-top: var(--size-px-3);
+  border-top: var(--border-thin) solid var(--retro-divider);
+}
