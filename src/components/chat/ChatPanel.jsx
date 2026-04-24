@@ -36,7 +36,7 @@ export default function ChatPanel() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, activeTab]);
 
   /* ── Enter key → focus input ── */
   useEffect(() => {

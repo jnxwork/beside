@@ -86,8 +86,30 @@ export default function PlayerCard() {
 
   if (!player) return null;
 
+  const [cooldownSecs, setCooldownSecs] = useState(0);
+
+  // Check cooldown when card opens for a target
+  useEffect(() => {
+    if (!target || isSelf) { setCooldownSecs(0); return; }
+    const remaining = window.__getReactionCooldown?.(target.id) || 0;
+    setCooldownSecs(Math.ceil(remaining / 1000));
+  }, [target?.id, isSelf]);
+
+  // Countdown timer
+  useEffect(() => {
+    if (cooldownSecs <= 0) return;
+    const timer = setTimeout(() => setCooldownSecs((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldownSecs]);
+
   const handleReaction = (emoji) => {
-    if (window.__onReaction) window.__onReaction(target.id, emoji);
+    if (cooldownSecs > 0) return;
+    const result = window.__onReaction?.(target.id, emoji);
+    if (result?.sent) {
+      setCooldownSecs(Math.ceil(result.cooldownMs / 1000));
+    } else if (result?.remainingMs) {
+      setCooldownSecs(Math.ceil(result.remainingMs / 1000));
+    }
   };
 
   const handleFollow = () => {
@@ -150,11 +172,12 @@ export default function PlayerCard() {
               {REACTION_EMOJIS.map((emoji) => (
                 <button
                   key={emoji}
-                  className={styles.emojiBtn}
+                  className={`${styles.emojiBtn} ${cooldownSecs > 0 ? styles.emojiBtnCooldown : ""}`}
                   onClick={() => handleReaction(emoji)}
+                  disabled={cooldownSecs > 0}
                   aria-label={`Send ${emoji}`}
                 >
-                  {emoji}
+                  {cooldownSecs > 0 ? cooldownSecs : emoji}
                 </button>
               ))}
             </div>

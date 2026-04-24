@@ -109,4 +109,11 @@
   transform: scale(1.12);
 }
 .emojiBtn:active { transform: scale(0.95); }
+.emojiBtnCooldown {
+  font-size: var(--fs-sm);
+  color: var(--retro-muted-light);
+  opacity: 0.6;
+  cursor: default;
+}
+.emojiBtnCooldown:hover { border-color: transparent; background: var(--retro-secondary-8); transform: none; }
 

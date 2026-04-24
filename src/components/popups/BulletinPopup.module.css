@@ -24,6 +24,9 @@
 
 /* Notes grid */
 .notesGrid { column-count: 3; column-gap: 8px; }
+@media (max-width: 540px) {
+  .notesGrid { column-count: 2; }
+}
 
 .noteCard {
   padding: 10px;

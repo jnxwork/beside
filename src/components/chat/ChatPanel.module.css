@@ -98,30 +98,30 @@
 /* ── Messages ── */
 .messages {
   flex: 1;
-  overflow-y: auto;
+  overflow-y: scroll;
   padding: var(--size-px-2);
   font-size: var(--fs-sm);
   line-height: 1.2;
   list-style: none;
   margin: 0;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
 }
 .messages::-webkit-scrollbar {
-  width: 0;
-}
-.messages:hover {
-  scrollbar-width: thin;
-  scrollbar-color: var(--retro-muted) transparent;
-}
-.messages:hover::-webkit-scrollbar {
   width: 4px;
 }
-.messages:hover::-webkit-scrollbar-track {
+.messages::-webkit-scrollbar-track {
   background: transparent;
+}
+.messages::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 2px;
+}
+.messages:hover {
+  scrollbar-color: var(--retro-muted) transparent;
 }
 .messages:hover::-webkit-scrollbar-thumb {
   background: var(--retro-muted);
-  border-radius: 2px;
 }
 
 .msg {
