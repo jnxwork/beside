@@ -219,4 +219,6 @@ export default {
   monthApr: "April", monthMay: "May", monthJun: "June",
   monthJul: "July", monthAug: "August", monthSep: "September",
   monthOct: "October", monthNov: "November", monthDec: "December",
+  updateReady: "New version available.",
+  updateBtn: "Update",
 };

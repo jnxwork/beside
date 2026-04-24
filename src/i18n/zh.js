@@ -218,4 +218,6 @@ export default {
   monthApr: "四月", monthMay: "五月", monthJun: "六月",
   monthJul: "七月", monthAug: "八月", monthSep: "九月",
   monthOct: "十月", monthNov: "十一月", monthDec: "十二月",
+  updateReady: "新版本已就绪",
+  updateBtn: "更新",
 };

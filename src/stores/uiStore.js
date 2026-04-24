@@ -23,6 +23,9 @@ const useUiStore = create((set) => ({
   recProcessing: false,
   recTimeStr: "00:00",
 
+  // Update banner
+  updateAvailable: false,
+
   // Loading
   loading: true,
   loadingText: "Loading...",
@@ -45,6 +48,7 @@ const useUiStore = create((set) => ({
   setIsRecording: (v) => set({ isRecording: v, ...(v ? {} : { recTimeStr: "00:00" }) }),
   setRecProcessing: (v) => set({ recProcessing: v }),
   setRecTimeStr: (v) => set({ recTimeStr: v }),
+  setUpdateAvailable: (v) => set({ updateAvailable: v }),
   setLoading: (loading, text, error) =>
     set({
       loading,

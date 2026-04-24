@@ -1,0 +1,48 @@
+.banner {
+  position: absolute;
+  top: var(--size-px-2);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: var(--size-px-2);
+  height: var(--ui-icon-frame-size);
+  padding: 0 var(--size-px-2) 0 var(--size-px-3);
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  border: var(--border-md) solid var(--retro-secondary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--pxl-bevel);
+  animation: bannerIn var(--duration-slow) ease;
+}
+
+@keyframes bannerIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-12px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.text {
+  font-size: var(--fs-sm);
+  color: var(--retro-muted);
+  white-space: nowrap;
+}
+
+.btn {
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  height: 28px;
+  padding: 0 var(--size-px-2-5);
+  background: var(--retro-primary-15);
+  color: var(--retro-primary);
+  border: var(--border-thin) solid var(--retro-primary-40);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: bold;
+  white-space: nowrap;
+  transition: background var(--duration-fast), border-color var(--duration-fast);
+}
+.btn:hover {
+  background: var(--retro-primary-30);
+  border-color: var(--retro-primary);
+}

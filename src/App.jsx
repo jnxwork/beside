@@ -29,6 +29,7 @@ import OverlapSelector from "./components/player/OverlapSelector.jsx";
 
 // Overlays (minor)
 import Hints from "./components/overlays/Hints.jsx";
+import UpdateBanner from "./components/overlays/UpdateBanner.jsx";
 
 const useResidentCard = new URLSearchParams(window.location.search).get("welcome") !== "legacy";
 const Welcome = useResidentCard ? WelcomePopupRC : WelcomePopup;
@@ -44,10 +45,14 @@ export default function App() {
   const recapOpen = useUiStore((s) => s.recapOpen);
   const playerCardTarget = useUiStore((s) => s.playerCardTarget);
   const overlapTarget = useUiStore((s) => s.overlapSelectorTarget);
+  const updateAvailable = useUiStore((s) => s.updateAvailable);
   const room = useGameStore((s) => s.room);
 
   return (
     <>
+      {/* Update banner */}
+      {updateAvailable && <UpdateBanner />}
+
       {/* Always-visible panels */}
       <InfoPanel />
       <SettingsPanel />
