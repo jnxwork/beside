@@ -2385,7 +2385,9 @@ function standUp() {
   localPlayer.x = Math.floor(localPlayer.x / TILE) * TILE + TILE / 2;
   localPlayer.y = Math.floor(localPlayer.y / TILE) * TILE + TILE / 2;
   emitPlayerSit(false);
-  socket.emit("playerMove", { x: localPlayer.x, y: localPlayer.y, direction: localPlayer.direction });
+  // playerSit already broadcasts position; update lastSent to avoid redundant playerMove
+  lastSentX = localPlayer.x;
+  lastSentY = localPlayer.y;
 }
 
 function emitPlayerSit(sitting) {
@@ -3396,6 +3398,8 @@ function getNearestBulletinBoard() {
     const h = obj.height || (ts ? ts.tileH : 32);
     const cx = obj.x + w / 2;
     const cy = obj.y;
+    // Player must be below the board (it's on a wall — no interacting from behind)
+    if (localPlayer.y < cy) continue;
     const dist = Math.abs(localPlayer.x - cx) + Math.abs(localPlayer.y - cy);
     if (dist < bestDist) {
       bestDist = dist;
@@ -4818,30 +4822,8 @@ function hidePlayerCard() {
   }
 }
 
-const REACTION_PAIR_COOLDOWN = 30000;
+const REACTION_PAIR_COOLDOWN = 10000;
 const reactionPairTimes = {};
-
-function sendReaction(emoji) {
-  if (!playerCardTarget) return;
-  const now = Date.now();
-  const key = playerCardTarget;
-  if (reactionPairTimes[key] && now - reactionPairTimes[key] < REACTION_PAIR_COOLDOWN) {
-    showReactionRateLimitHint();
-    hidePlayerCard();
-    return;
-  }
-  reactionPairTimes[key] = now;
-  socket.emit("sendReaction", { targetId: playerCardTarget, emoji });
-  hidePlayerCard();
-}
-
-function showReactionRateLimitHint() {
-  const id = ++reactionNotifIdCounter;
-  const text = `<span style="color:#777">${t("reactionRateLimit")}</span>`;
-  reactionNotifications.push({ id, text, timestamp: Date.now() });
-  if (reactionNotifications.length > 10) reactionNotifications.shift();
-  updateNotificationPanel();
-}
 
 const PROFESSION_COLORS_GAME = {
   tech: "#5EB8E0", creative: "#D4908C", business: "#D4A830",
@@ -4896,7 +4878,7 @@ function updateNotificationPanel() {
     return;
   }
   panel.style.display = "flex";
-  reactionNotifications.forEach(n => {
+  [...reactionNotifications].reverse().forEach(n => {
     const d = new Date(n.timestamp);
     const timeStr = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
     const item = document.createElement("div");
@@ -4911,13 +4893,6 @@ function updateNotificationPanel() {
 }
 
 
-// Bind emoji button clicks (player card reactions)
-document.querySelectorAll("#player-card-reactions .emoji-btn").forEach(btn => {
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    sendReaction(btn.dataset.emoji);
-  });
-});
 
 // Dismiss player card / overlap selector on outside click
 document.addEventListener("click", (e) => {
@@ -5182,7 +5157,12 @@ document.addEventListener("keydown", (e) => {
 
   // E to toggle sit/stand (like most PC games)
   if ((e.key === "e" || e.key === "E") && localPlayer) {
-    // Bulletin board interaction (highest priority after focus popup checks)
+    // Already sitting → stand up first (highest priority)
+    if (localSitting) {
+      standUp();
+      return;
+    }
+    // Bulletin board interaction
     const bb = getNearestBulletinBoard();
     if (bb && bb.dist <= BULLETIN_INTERACT_DIST) {
       openBulletinPopup();
@@ -5193,9 +5173,7 @@ document.addEventListener("keydown", (e) => {
       socket.emit("toggleCampfire", { id: camp.id, x: localPlayer.x, y: localPlayer.y });
       return;
     }
-    if (localSitting) {
-      standUp();
-    } else {
+    {
       const seat = getNearestSittable(localPlayer.x, localPlayer.y);
       if (seat) {
         localPlayer.x = seat.x;
@@ -5205,7 +5183,10 @@ document.addEventListener("keydown", (e) => {
         localSitting = true;
         localPlayer.isSitting = true;
         emitPlayerSit(true);
-        socket.emit("playerMove", { x: localPlayer.x, y: localPlayer.y, direction: localPlayer.direction });
+        // Update lastSent to prevent game loop from emitting a redundant playerMove
+        // (playerSit already broadcasts position via playerUpdated)
+        lastSentX = localPlayer.x;
+        lastSentY = localPlayer.y;
       }
     }
   }
@@ -7041,6 +7022,14 @@ socket.on("sessionRestored", (data) => {
   if (data.focusRecords && data.focusRecords.length > 0) {
     mergeFocusRecords(data.focusRecords);
   }
+  // Version check: show update banner if server restarted with new build
+  if (data.buildId) {
+    if (!window.__buildId) {
+      window.__buildId = data.buildId;
+    } else if (window.__buildId !== data.buildId) {
+      storeSet("ui", "setUpdateAvailable", true);
+    }
+  }
 });
 
 // Visibility API: reset idle timers when tab becomes visible
@@ -7049,20 +7038,22 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // Tab close: end focus (save record) + remove player immediately
-window.addEventListener("beforeunload", (e) => {
+function handlePageClose(e) {
   if (isFocusing) {
     // Save focus record before leaving
     const elapsed = Date.now() - focusStartTime;
     saveFocusRecord(focusTaskName, focusCategory, elapsed, focusStartTime);
     localStorage.removeItem("currentFocusTask");
-    e.preventDefault();       // triggers native "Leave site?" dialog
+    if (e.type === "beforeunload") e.preventDefault(); // triggers native "Leave site?" dialog
   }
   if (isRecording || recProcessing) {
-    e.preventDefault();       // warn: recording in progress
+    if (e.type === "beforeunload") e.preventDefault(); // warn: recording in progress
   }
   socket.emit("intentionalClose");
   recFrames = [];
-});
+}
+window.addEventListener("beforeunload", handlePageClose);
+window.addEventListener("pagehide", handlePageClose);
 
 socket.on("playerJoined", (player) => {
   otherPlayers[player.id] = player;
@@ -7186,6 +7177,7 @@ socket.on("chatMessage", (msg) => {
 });
 
 socket.on("chatHistory", (history) => {
+  storeSet("chat", "clearMessages");
   for (const msg of history) {
     addChatMessage(msg, true);
     storeSet("chat", "addMessage", msg);
@@ -7357,8 +7349,20 @@ window.__onStatusChange = function(status) {
 
 // --- Player card / reactions ---
 window.__onReaction = function(targetId, emoji) {
+  const now = Date.now();
+  const last = reactionPairTimes[targetId];
+  if (last && now - last < REACTION_PAIR_COOLDOWN) {
+    return { sent: false, remainingMs: REACTION_PAIR_COOLDOWN - (now - last) };
+  }
+  reactionPairTimes[targetId] = now;
   socket.emit("sendReaction", { targetId, emoji });
-  hidePlayerCard();
+  return { sent: true, cooldownMs: REACTION_PAIR_COOLDOWN };
+};
+window.__getReactionCooldown = function(targetId) {
+  const last = reactionPairTimes[targetId];
+  if (!last) return 0;
+  const remaining = REACTION_PAIR_COOLDOWN - (Date.now() - last);
+  return remaining > 0 ? remaining : 0;
 };
 window.__onFollowToggle = function(targetId) {
   const p = otherPlayers[targetId];
@@ -8294,7 +8298,8 @@ if (sitBtn) {
         localSitting = true;
         localPlayer.isSitting = true;
         emitPlayerSit(true);
-        socket.emit("playerMove", { x: localPlayer.x, y: localPlayer.y, direction: localPlayer.direction });
+        lastSentX = localPlayer.x;
+        lastSentY = localPlayer.y;
       }
     }
     updateSitButton();
@@ -8543,13 +8548,19 @@ function updateRecTitle() {
   storeSet("ui", "setRecTimeStr", timeStr);
 }
 
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden && (isRecording || recProcessing)) {
-    document.title = "\u{1F4F9} Recording - Beside";
+// Dynamic tab title
+function updateDocTitle() {
+  if (isRecording || recProcessing) {
+    document.title = "\u23FA Recording \u00B7 Beside";
+  } else if (isFocusing && focusStartTime) {
+    document.title = "\uD83D\uDD25 " + formatFocusTime(Date.now() - focusStartTime) + " \u00B7 Beside";
+  } else if (currentRoom === "focus") {
+    document.title = "Beside \u00B7 Focus";
   } else {
-    document.title = "Beside";
+    document.title = "Beside \u00B7 Lounge";
   }
-});
+}
+setInterval(updateDocTitle, 1000);
 
 if (recBtn) {
   recBtn.addEventListener("click", (e) => {

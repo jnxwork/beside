@@ -20,6 +20,7 @@ const distPath = path.join(__dirname, "dist");
 // ============================================================
 const APP_ENV = process.env.NODE_ENV || "staging";
 const IS_PROD = APP_ENV === "production";
+const BUILD_ID = Date.now().toString(36);
 
 // ============================================================
 // DATABASE
@@ -303,7 +304,7 @@ function sanitizePlayer(p) {
   return {
     id: p.id, x: p.x, y: p.y, name: p.name, status: p.status,
     direction: p.direction, room: p.room,
-    isFocusing: p.isFocusing, focusCategory: p.focusCategory,
+    isFocusing: p.isFocusing, focusStartTime: p.focusStartTime || null, focusCategory: p.focusCategory,
     giftPile: p.giftPile, isSitting: p.isSitting,
     character: p.character, tagline: p.tagline,
     languages: p.languages, timezoneHour: p.timezoneHour,
@@ -609,7 +610,7 @@ function isValidCharConfig(config) {
 
 const REACTION_COOLDOWN = 30000;
 const reactionCooldowns = {};
-const VALID_REACTIONS = ["👋", "💪", "❤️", "⭐"];
+const VALID_REACTIONS = ["👋", "💪", "❤️", "👀"];
 
 // Gift pile for idle Lounge players
 const PILE_GIFT_INTERVAL = IS_PROD ? 15 * 60 * 1000 : 15000; // prod: 15min, staging: 15s
@@ -926,16 +927,26 @@ function setCatTarget(tx, ty, opts) {
   }
   if (!isCatWalkable(fx, fy, cat.room)) {
     let found = false;
-    for (let r = 8; r <= 48; r += 8) {
+    for (let r = 8; r <= 128; r += 8) {
       for (const [dx, dy] of [[r,0],[-r,0],[0,r],[0,-r],[r,r],[-r,r],[r,-r],[-r,-r]]) {
-        if (isCatWalkable(tx + dx, ty + dy, cat.room)) {
-          fx = tx + dx; fy = ty + dy;
+        if (isCatWalkable(fx + dx, fy + dy, cat.room)) {
+          fx = fx + dx; fy = fy + dy;
           found = true; break;
         }
       }
       if (found) break;
     }
-    if (!found) { cat.targetX = cat.x; cat.targetY = cat.y; cat._path = null; return; }
+    if (!found) {
+      // Last resort: pick a random walkable position in the safe area
+      const dims = ROOM_DIMS[cat.room];
+      const minY = cat.room === "rest" ? 10 * TILE + TILE / 2 : TILE * 2;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const rx = 80 + Math.random() * (dims.cols * TILE - 160);
+        const ry = minY + Math.random() * (dims.rows * TILE - 80 - minY);
+        if (isCatWalkable(rx, ry, cat.room)) { fx = rx; fy = ry; found = true; break; }
+      }
+      if (!found) { cat.targetX = cat.x; cat.targetY = cat.y; cat._path = null; return; }
+    }
   }
   cat.targetX = fx;
   cat.targetY = fy;
@@ -1291,12 +1302,13 @@ function updateCat() {
   // Global anti-stuck: if cat hasn't moved >16px in 100 ticks during movement, teleport to room center
   const isMovementState = cat.state === "wander" || cat.state === "curious" || cat.state === "zoomies" || cat.state === "leg_rub" || cat.state === "gift_deliver";
   if (isMovementState) {
-    // Hard timeout: if any movement state lasts >400 ticks (~20s), force rest
+    // Hard timeout: if any movement state lasts >400 ticks (~20s), force sit
     if (cat._moveStartTick && cat._tick - cat._moveStartTick > 400) {
       cat.onFurniture = null;
       cat._path = null;
       cat.gift = null; cat.giftTarget = null; cat._giftChaseStart = null;
-      enterRestState();
+      cat.state = "sit";
+      cat.stateTimer = 60 + Math.floor(Math.random() * 60);
       cat._antiStuckTick = 0;
       return;
     }
@@ -1322,7 +1334,11 @@ function updateCat() {
         }
         cat.onFurniture = null;
         cat._path = null;
-        enterRestState();
+        cat.gift = null; cat.giftTarget = null; cat._giftChaseStart = null;
+        // Use sit state instead of enterRestState() to avoid immediately
+        // picking the same furniture target and getting stuck again
+        cat.state = "sit";
+        cat.stateTimer = 80 + Math.floor(Math.random() * 80);
         cat._antiStuckTick = 0;
         cat._antiStuckX = cat.x;
         cat._antiStuckY = cat.y;
@@ -1869,6 +1885,19 @@ io.on("connection", (socket) => {
     player._userId = dbUser.id;
     player._email = dbUser.email;
     player._isRegistered = !dbUser.is_guest;
+
+    // Clean up ghost player if same userId already has an active connection
+    const existingSocketId = userSocketMap[dbUser.id];
+    if (existingSocketId && existingSocketId !== socket.id && players[existingSocketId]) {
+      delete players[existingSocketId];
+      io.emit("playerLeft", existingSocketId);
+      const oldToken = socketToSession[existingSocketId];
+      if (oldToken && sessions[oldToken]) {
+        clearTimeout(sessions[oldToken].disconnectTimer);
+        delete sessions[oldToken];
+      }
+      delete socketToSession[existingSocketId];
+    }
     userSocketMap[dbUser.id] = socket.id;
 
     players[socket.id] = player;
@@ -1902,6 +1931,7 @@ io.on("connection", (socket) => {
 
   // Tell client whether this is a resume
   socket.emit("sessionRestored", {
+    buildId: BUILD_ID,
     sessionToken: socketToSession[socket.id],
     resumed: isResume,
     room: player.room,
@@ -2433,8 +2463,11 @@ io.on("connection", (socket) => {
       delete userSocketMap[p._userId];
     }
 
-    if (intentionalClose) {
-      // Tab closed — immediate removal, no grace period
+    // Never-completed-welcome players (still "Anonymous") get no grace period
+    const isGhost = p && p.name === "Anonymous" && p.timezoneHour == null;
+
+    if (intentionalClose || isGhost) {
+      // Tab closed or ghost — immediate removal, no grace period
       delete players[socket.id];
       io.emit("playerLeft", socket.id);
       if (token) { delete sessions[token]; delete socketToSession[socket.id]; }
@@ -2567,6 +2600,17 @@ app.get('/api/config', (req, res) => {
   res.json({
     env: APP_ENV,
     auraStageMs: IS_PROD ? 1800000 : 10000, // prod: 30min, staging: 10s
+  });
+});
+
+app.get('/api/cat', (req, res) => {
+  res.json({
+    x: Math.round(cat.x), y: Math.round(cat.y),
+    targetX: Math.round(cat.targetX), targetY: Math.round(cat.targetY),
+    room: cat.room, state: cat.state, timer: cat.stateTimer,
+    furniture: cat.onFurniture, gift: cat.gift,
+    hasPath: !!cat._path, pathLen: cat._path ? cat._path.length : 0,
+    stuck: cat._stuckCount || 0, antiStuck: cat._antiStuckTick || 0,
   });
 });
 
