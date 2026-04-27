@@ -2014,8 +2014,10 @@ io.on("connection", (socket) => {
     const payload = {
       senderId: socket.id,
       senderName: sender.name,
+      senderUserId: sender._userId || null,
       targetId: data.targetId,
       targetName: target.name,
+      targetUserId: target._userId || null,
       emoji: data.emoji,
       room: sender.room,
       x: target.x,
@@ -2152,6 +2154,7 @@ io.on("connection", (socket) => {
     const sender = players[socket.id];
     const msg = {
       id: socket.id,
+      userId: sender._userId || null,
       name: sender.name,
       profession: sender.profession || "mystery",
       text: sanitizeText(text.trim()).slice(0, 200),
@@ -2457,10 +2460,11 @@ io.on("connection", (socket) => {
       }
     }
 
-    // Clean up userSocketMap
+    // Clean up userSocketMap + update last_seen
     const p = players[socket.id];
-    if (p && p._userId && userSocketMap[p._userId] === socket.id) {
-      delete userSocketMap[p._userId];
+    if (p && p._userId) {
+      if (userSocketMap[p._userId] === socket.id) delete userSocketMap[p._userId];
+      stmtUpdateLastSeen.run(p._userId);
     }
 
     // Never-completed-welcome players (still "Anonymous") get no grace period
@@ -2620,7 +2624,18 @@ app.get('/api/status', (req, res) => {
     online: all.length,
     focus: all.filter(p => p.room === 'focus').length,
     lounge: all.filter(p => p.room === 'rest').length,
+    cat: { x: Math.round(cat.x), y: Math.round(cat.y), room: cat.room, state: cat.state },
   });
+});
+
+app.get('/api/last-seen/:userId', (req, res) => {
+  const userId = parseInt(req.params.userId, 10);
+  if (!userId || !Number.isFinite(userId)) return res.status(400).json({ error: "invalid" });
+  // Check if currently online
+  if (userSocketMap[userId]) return res.json({ online: true });
+  const row = stmtGetUserById.get(userId);
+  if (!row || !row.last_seen) return res.json({ online: false, lastSeen: null });
+  res.json({ online: false, lastSeen: row.last_seen * 1000 }); // convert to ms
 });
 
 // Vite middleware (dev) or static files (production)

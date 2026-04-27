@@ -117,3 +117,21 @@
 }
 .emojiBtnCooldown:hover { border-color: transparent; background: var(--retro-secondary-8); transform: none; }
 
+.offlineTip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  margin-top: -6px;
+  background: #1e2636;
+  color: var(--retro-muted-light);
+  font-size: var(--fs-xs);
+  padding: var(--size-px-1) var(--size-px-2);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: var(--z-card);
+  animation: offlineTipIn 0.15s ease-out;
+}
+@keyframes offlineTipIn {
+  from { opacity: 0; transform: translate(-50%, -100%) translateY(4px); }
+  to { opacity: 1; transform: translate(-50%, -100%) translateY(0); }
+}

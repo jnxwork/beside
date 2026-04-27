@@ -220,4 +220,9 @@ export default {
   monthOct: "十月", monthNov: "十一月", monthDec: "十二月",
   updateReady: "新版本已就绪",
   updateBtn: "更新",
+  notOnline: "未在线",
+  agoJustNow: "刚刚在线",
+  agoMin: "{n}分钟前在线",
+  agoHr: "{n}小时前在线",
+  agoDay: "{n}天前在线",
 };

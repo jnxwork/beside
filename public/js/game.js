@@ -430,6 +430,11 @@ const TRANSLATIONS = {
     reacted: "sent you",
     reactedTo: "You sent",
     reactedToSuffix: "",
+    notOnline: "Not online",
+    agoJustNow: "Online just now",
+    agoMin: "Online {n}min ago",
+    agoHr: "Online {n}hr ago",
+    agoDay: "Online {n}d ago",
     chooseCharacter: "Choose your look",
     sit: "Sit",
     stand: "Stand",
@@ -597,6 +602,11 @@ const TRANSLATIONS = {
     reacted: "\u5BF9\u4F60\u53D1\u9001\u4E86",
     reactedTo: "\u4F60\u5BF9",
     reactedToSuffix: "\u53D1\u9001\u4E86",
+    notOnline: "\u672A\u5728\u7EBF",
+    agoJustNow: "\u521A\u521A\u5728\u7EBF",
+    agoMin: "{n}\u5206\u949F\u524D\u5728\u7EBF",
+    agoHr: "{n}\u5C0F\u65F6\u524D\u5728\u7EBF",
+    agoDay: "{n}\u5929\u524D\u5728\u7EBF",
     chooseCharacter: "\u9009\u62E9\u89D2\u8272",
     sit: "\u5750\u4E0B",
     stand: "\u8D77\u6765",
@@ -4774,6 +4784,30 @@ let playerCardLastScreen = null; // { x, y } last computed screen pos to skip re
 let reactionNotifications = [];
 let reactionNotifIdCounter = 0;
 
+// Delegated click handler for reaction notification names
+document.addEventListener("click", (e) => {
+  const el = e.target.closest(".reaction-name");
+  if (!el) return;
+  const pid = el.dataset.id;
+  const uid = el.dataset.userid;
+  const rect = el.getBoundingClientRect();
+  const sx = rect.left + rect.width / 2, sy = rect.top;
+  // Try exact socket-id match first
+  let foundId = pid === myId ? myId : (otherPlayers[pid] ? pid : null);
+  // If not found, player may have reconnected with a new socket — search by userId
+  if (!foundId && uid) {
+    const uidNum = parseInt(uid, 10);
+    for (const id in otherPlayers) {
+      if (otherPlayers[id]._userId === uidNum) { foundId = id; break; }
+    }
+  }
+  if (foundId) {
+    showPlayerCard(foundId, { x: sx, y: sy });
+  } else {
+    showOfflineTooltip(sx, sy, uid ? parseInt(uid, 10) : null);
+  }
+});
+
 const LANG_DISPLAY = { en: "EN", "zh-CN": "\u7B80\u4E2D", "zh-TW": "\u7E41\u4E2D" };
 
 function getTimePeriodForHour(h) {
@@ -4795,19 +4829,20 @@ function hideOverlapSelector() {
   storeSet("ui", "setOverlapSelectorTarget", null);
 }
 
-function showPlayerCard(targetId) {
+function showPlayerCard(targetId, screenPos) {
   hideOverlapSelector();
-  playerCardTarget = targetId;
   const p = targetId === myId ? localPlayer : otherPlayers[targetId];
   if (!p) return;
-  // Ensure self player data is in React store (may be missing due to load timing)
-  if (targetId === myId) {
-    if (localPlayer.timezoneHour == null) localPlayer.timezoneHour = new Date().getHours();
-    storeSet("game", "updatePlayer", myId, localPlayer);
+  playerCardTarget = targetId;
+  // Ensure self timezone is set
+  if (targetId === myId && localPlayer.timezoneHour == null) {
+    localPlayer.timezoneHour = new Date().getHours();
   }
+  // Sync player data to React store so PlayerCard can read it
+  storeSet("game", "updatePlayer", targetId, p);
   playerCardOpenPos = { x: p.x, y: p.y };
-  // Convert game coords to screen coords for CSS positioning
-  const screen = gameToScreen(p.x, p.y - 40);
+  // Use provided screen position (e.g. from chat click) or convert from game coords
+  const screen = screenPos || gameToScreen(p.x, p.y - 40);
   storeSet("ui", "setPlayerCardTarget", { id: targetId, x: screen.x, y: screen.y });
 }
 
@@ -4836,18 +4871,18 @@ function getProfessionColor(id) {
   return PROFESSION_COLORS_GAME[prof] || PROFESSION_COLORS_GAME.mystery;
 }
 
-function coloredName(name, id) {
-  return `<span style="color:${getProfessionColor(id)};font-weight:bold">[${escapeHtml(name)}]</span>`;
+function coloredName(name, id, userId) {
+  return `<span class="reaction-name" data-id="${escapeHtml(id)}" data-userid="${userId || ""}" style="color:${getProfessionColor(id)};font-weight:bold;cursor:pointer">[${escapeHtml(name)}]</span>`;
 }
 
 function buildReactionText(data) {
   if (data.targetId === myId) {
-    return `${coloredName(data.senderName, data.senderId)} ${t("reacted")} ${data.emoji}`;
+    return `${coloredName(data.senderName, data.senderId, data.senderUserId)} ${t("reacted")} ${data.emoji}`;
   } else {
     if (currentLang === "zh") {
-      return `${t("reactedTo")} ${coloredName(data.targetName, data.targetId)} ${t("reactedToSuffix")} ${data.emoji}`;
+      return `${t("reactedTo")} ${coloredName(data.targetName, data.targetId, data.targetUserId)} ${t("reactedToSuffix")} ${data.emoji}`;
     }
-    return `${t("reactedTo")} ${coloredName(data.targetName, data.targetId)} ${data.emoji}`;
+    return `${t("reactedTo")} ${coloredName(data.targetName, data.targetId, data.targetUserId)} ${data.emoji}`;
   }
 }
 
@@ -6291,6 +6326,7 @@ function updateRoomUI() {
   hideOverlapSelector();
   storeSet("game", "setRoom", currentRoom);
   storeSet("chat", "setChatVisible", currentRoom === "rest");
+  if (currentRoom === "rest") storeSet("chat", "setChatCollapsed", false);
 
   if (currentRoom === "focus") {
     if (localPlayer && !isFocusing) {
@@ -6906,6 +6942,8 @@ socket.on("disconnect", () => {
 
 socket.on("currentPlayers", (players) => {
   myId = socket.id;
+  // Clear stale entries from previous connection
+  for (const id in otherPlayers) delete otherPlayers[id];
   storeSet("game", "setLocalPlayerId", myId);
   storeSet("game", "setPlayers", players);
   for (const id in players) {
@@ -7104,6 +7142,7 @@ socket.on("playerUpdated", (player) => {
     otherPlayers[player.id].languages = player.languages;
     otherPlayers[player.id].timezoneHour = player.timezoneHour;
     otherPlayers[player.id].birthMonth = player.birthMonth;
+    storeSet("game", "updatePlayer", player.id, otherPlayers[player.id]);
   }
   updateOnlineCount();
 });
@@ -7267,6 +7306,65 @@ function updateOnlineCount() {
 // React components call these; game.js executes the logic.
 // ============================================================
 
+// Offline tooltip (vanilla DOM, shared by notification panel + React bridge)
+let _offlineTooltipTimer = null;
+let _offlineTooltipEl = null;
+function showOfflineTooltip(sx, sy, userId) {
+  clearTimeout(_offlineTooltipTimer);
+  // Always ensure element is freshly in the DOM
+  if (_offlineTooltipEl && _offlineTooltipEl.parentNode) {
+    _offlineTooltipEl.parentNode.removeChild(_offlineTooltipEl);
+  }
+  const el = document.createElement("div");
+  el.id = "offline-tooltip";
+  el.style.display = "none";
+  document.body.appendChild(el);
+  _offlineTooltipEl = el;
+  const show = (text) => {
+    el.textContent = text;
+    el.style.cssText = `position:fixed;display:block;left:${sx}px;top:${sy}px;transform:translate(-50%,-100%);margin-top:-6px;background:#1e2636;color:#a0a0a0;font-size:12px;padding:4px 8px;border-radius:4px;white-space:nowrap;pointer-events:none;z-index:9999;opacity:1;transition:opacity .15s`;
+    _offlineTooltipTimer = setTimeout(() => { el.style.display = "none"; }, 3000);
+  };
+  if (userId) {
+    el.style.display = "none";
+    fetch(`/api/last-seen/${userId}`).then(r => r.json()).then(data => {
+      if (data.online) {
+        // Player is online — try to open their card (they may have reconnected)
+        for (const id in otherPlayers) {
+          if (otherPlayers[id]._userId === userId) {
+            showPlayerCard(id, { x: sx, y: sy });
+            return;
+          }
+        }
+        // Online but not visible locally (different room) — skip
+        return;
+      }
+      if (data.lastSeen) {
+        const sec = Math.floor((Date.now() - data.lastSeen) / 1000);
+        let ago;
+        if (sec < 60) ago = t("agoJustNow");
+        else if (sec < 3600) ago = t("agoMin").replace("{n}", Math.floor(sec / 60));
+        else if (sec < 86400) ago = t("agoHr").replace("{n}", Math.floor(sec / 3600));
+        else ago = t("agoDay").replace("{n}", Math.floor(sec / 86400));
+        show(ago);
+      } else {
+        show(t("notOnline"));
+      }
+    }).catch(() => show(t("notOnline")));
+  } else {
+    show(t("notOnline"));
+  }
+}
+
+// Show player card from UI (e.g. chat name click) at given screen position
+// Returns false if player is offline (not found)
+window.__showPlayerCard = function(id, screenX, screenY) {
+  const p = id === myId ? localPlayer : otherPlayers[id];
+  if (!p) return false;
+  showPlayerCard(id, { x: screenX, y: screenY });
+  return true;
+};
+
 // --- Chat ---
 window.__onChatSend = function(text, scope) {
   if (!text || currentRoom !== "rest") return;
@@ -7349,6 +7447,8 @@ window.__onStatusChange = function(status) {
 
 // --- Player card / reactions ---
 window.__onReaction = function(targetId, emoji) {
+  const p = otherPlayers[targetId];
+  if (!p) return { offline: true, userId: null };
   const now = Date.now();
   const last = reactionPairTimes[targetId];
   if (last && now - last < REACTION_PAIR_COOLDOWN) {

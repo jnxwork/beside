@@ -1,7 +1,6 @@
 import { useRef, useEffect, useState } from "react";
 import { PixelButton, PixelBadge } from "@pxlkit/ui-kit";
 import useChatStore from "../../stores/chatStore.js";
-import useUiStore from "../../stores/uiStore.js";
 import { useT } from "../../i18n/index.js";
 import styles from "./ChatPanel.module.css";
 import { PROFESSION_COLORS } from "../../constants.js";
@@ -13,6 +12,17 @@ const TABS = [
 ];
 
 const SCOPES = ["room", "nearby"];
+
+function fmtAgo(ts, t) {
+  const sec = Math.floor((Date.now() - ts) / 1000);
+  if (sec < 60) return t("agoJustNow");
+  const min = Math.floor(sec / 60);
+  if (min < 60) return t("agoMin").replace("{n}", min);
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return t("agoHr").replace("{n}", hr);
+  const day = Math.floor(hr / 24);
+  return t("agoDay").replace("{n}", day);
+}
 
 export default function ChatPanel() {
   const t = useT();
@@ -26,8 +36,9 @@ export default function ChatPanel() {
   const setUnreadCount = useChatStore((s) => s.setUnreadCount);
   const unreadCount = useChatStore((s) => s.unreadCount);
 
-  const setPlayerCardTarget = useUiStore((s) => s.setPlayerCardTarget);
   const [input, setInput] = useState("");
+  const [offlineHint, setOfflineHint] = useState(null); // { x, y, text }
+  const offlineTimer = useRef(null);
   const messagesRef = useRef(null);
   const bottomRef = useRef(null);
   const inputBarRef = useRef(null);
@@ -149,9 +160,32 @@ export default function ChatPanel() {
                     className={`${styles.name} ${styles.nameClickable}`}
                     style={{ color: PROFESSION_COLORS[msg.profession] || PROFESSION_COLORS.mystery }}
                     onClick={(e) => {
-                      if (msg.id) {
+                      if (!msg.id) return;
+                      if (window.__showPlayerCard) {
                         const rect = e.currentTarget.getBoundingClientRect();
-                        setPlayerCardTarget({ id: msg.id, x: rect.left + rect.width / 2, y: rect.top });
+                        const shown = window.__showPlayerCard(msg.id, rect.left + rect.width / 2, rect.top);
+                        if (!shown) {
+                          // If already showing, just reset timer
+                          if (offlineHint) {
+                            clearTimeout(offlineTimer.current);
+                            offlineTimer.current = setTimeout(() => setOfflineHint(null), 3000);
+                            return;
+                          }
+                          clearTimeout(offlineTimer.current);
+                          const pos = { x: rect.left + rect.width / 2, y: rect.top };
+                          const showHint = (text) => {
+                            setOfflineHint({ ...pos, text });
+                            offlineTimer.current = setTimeout(() => setOfflineHint(null), 3000);
+                          };
+                          if (msg.userId) {
+                            fetch(`/api/last-seen/${msg.userId}`).then(r => r.json()).then(data => {
+                              if (data.online) return;
+                              showHint(data.lastSeen ? fmtAgo(data.lastSeen, t) : t("notOnline"));
+                            }).catch(() => showHint(t("notOnline")));
+                          } else {
+                            showHint(t("notOnline"));
+                          }
+                        }
                       }
                     }}
                   >
@@ -186,6 +220,14 @@ export default function ChatPanel() {
           </div>
         </div>
       </div>
+      {offlineHint && (
+        <div
+          className={styles.offlineTooltip}
+          style={{ left: offlineHint.x, top: offlineHint.y }}
+        >
+          {offlineHint.text}
+        </div>
+      )}
     </aside>
   );
 }

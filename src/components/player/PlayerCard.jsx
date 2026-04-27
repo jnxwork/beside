@@ -44,6 +44,9 @@ export default function PlayerCard() {
   // DEV: click timezone to cycle through time periods
   const TIME_KEYS = Object.keys(TIME_DOT_COLORS);
   const [debugTimeIdx, setDebugTimeIdx] = useState(-1); // -1 = real time
+  const [cooldownSecs, setCooldownSecs] = useState(0);
+  const [offlineTip, setOfflineTip] = useState(null); // { x, y, text }
+  const offlineTipTimer = useRef(null);
 
   // Close on outside click
   useEffect(() => {
@@ -84,10 +87,6 @@ export default function PlayerCard() {
     }
   });
 
-  if (!player) return null;
-
-  const [cooldownSecs, setCooldownSecs] = useState(0);
-
   // Check cooldown when card opens for a target
   useEffect(() => {
     if (!target || isSelf) { setCooldownSecs(0); return; }
@@ -102,9 +101,24 @@ export default function PlayerCard() {
     return () => clearTimeout(timer);
   }, [cooldownSecs]);
 
+  if (!player) return offlineTip ? (
+    <div className={styles.offlineTip} style={{ left: offlineTip.x, top: offlineTip.y }}>
+      {offlineTip.text}
+    </div>
+  ) : null;
+
   const handleReaction = (emoji) => {
     if (cooldownSecs > 0) return;
     const result = window.__onReaction?.(target.id, emoji);
+    if (result?.offline) {
+      // Player went offline — close card, show tooltip
+      const pos = { x: target.x, y: target.y };
+      setTarget(null);
+      clearTimeout(offlineTipTimer.current);
+      setOfflineTip({ ...pos, text: t("notOnline") });
+      offlineTipTimer.current = setTimeout(() => setOfflineTip(null), 3000);
+      return;
+    }
     if (result?.sent) {
       setCooldownSecs(Math.ceil(result.cooldownMs / 1000));
     } else if (result?.remainingMs) {

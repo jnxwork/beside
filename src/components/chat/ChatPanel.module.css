@@ -134,6 +134,24 @@
 .name { font-weight: bold; }
 .nameClickable { cursor: pointer; }
 .nameClickable:hover { text-decoration: underline; }
+.offlineTooltip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  margin-top: -6px;
+  background: #1e2636;
+  color: var(--retro-muted-light);
+  font-size: var(--fs-xs);
+  padding: var(--size-px-1) var(--size-px-2);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: var(--z-card);
+  animation: offlineTooltipIn 0.15s ease-out;
+}
+@keyframes offlineTooltipIn {
+  from { opacity: 0; transform: translate(-50%, -100%) translateY(4px); }
+  to { opacity: 1; transform: translate(-50%, -100%) translateY(0); }
+}
 .msgSystem.msgSystem { color: var(--retro-system); }
 .msgNearby { color: var(--retro-nearby); }
 

@@ -221,4 +221,9 @@ export default {
   monthOct: "October", monthNov: "November", monthDec: "December",
   updateReady: "New version available.",
   updateBtn: "Update",
+  notOnline: "Not online",
+  agoJustNow: "Online just now",
+  agoMin: "Online {n}min ago",
+  agoHr: "Online {n}hr ago",
+  agoDay: "Online {n}d ago",
 };
