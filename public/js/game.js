@@ -6988,8 +6988,10 @@ socket.on("currentPlayers", (players) => {
           socket.emit("setProfession", savedProfession);
         }
       }
-      // Ensure timezoneHour is set immediately
-      if (localPlayer.timezoneHour == null) localPlayer.timezoneHour = new Date().getHours();
+      // Always sync timezoneHour to server (it's not stored in DB)
+      const currentHour = new Date().getHours();
+      localPlayer.timezoneHour = currentHour;
+      socket.emit("setTimezoneHour", currentHour);
       currentRoom = localPlayer.room;
       updateRoomUI();
       // Re-sync focus state if locally focusing (e.g. after server restart)
